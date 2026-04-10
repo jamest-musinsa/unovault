@@ -1,0 +1,11 @@
+[toolchain]
+# Pinned to 1.94.0 because several dependencies (getrandom, proptest, uuid)
+# require edition 2024 support, which stabilized in Rust 1.85. We pin to
+# 1.94 specifically to give every contributor the same clippy lints and the
+# same dependency resolution results. Bump only via a deliberate PR.
+#
+# .tool-versions (asdf/mise) is kept in sync for contributors who use
+# those tool managers; rustup users get this file auto-honored by cargo.
+channel = "1.94.0"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

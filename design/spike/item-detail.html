@@ -1,0 +1,677 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>unovault — item detail (week 0 spike)</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+<style>
+  /* ============================================================
+     DESIGN TOKENS v0 (same as locked-home + vault-list)
+     ============================================================ */
+  :root {
+    --bg:             #FBFAF7;
+    --surface:        #FFFFFF;
+    --surface-2:      #F2F0EA;
+    --surface-hover:  #F6F4EE;
+    --border:         #E6E2D8;
+    --border-subtle:  #EFECE3;
+    --border-strong:  #C9C3B3;
+    --text:           #1C1A15;
+    --text-muted:     #5E594C;
+    --text-faint:     #948E7E;
+    --accent:         #B8532C;
+    --accent-hover:   #9C4322;
+    --accent-soft:    rgba(184, 83, 44, 0.08);
+    --green-success:  #3E7B52;
+    --red-error:      #A33232;
+    --amber-warn:     #B8782C;
+
+    --font-ui:        'Inter', -apple-system, system-ui, sans-serif;
+    --font-serif:     'Iowan Old Style', 'Palatino', 'Charter', serif;
+    --font-mono:      'JetBrains Mono', 'SF Mono', 'Menlo', monospace;
+
+    --fs-xs:   11px; --lh-xs:   14px;
+    --fs-sm:   13px; --lh-sm:   18px;
+    --fs-md:   15px; --lh-md:   22px;
+    --fs-lg:   18px; --lh-lg:   26px;
+    --fs-xl:   24px; --lh-xl:   32px;
+    --fs-2xl:  32px; --lh-2xl:  40px;
+
+    --s-1:  4px;  --s-2: 8px;   --s-3: 12px;  --s-4: 16px;
+    --s-5: 20px;  --s-6: 24px;  --s-8: 32px;  --s-10: 40px;
+    --s-12: 48px;
+
+    --r-sm:   4px;
+    --r-md:  10px;
+    --r-lg:  16px;
+
+    --shadow-1: 0 1px 2px rgba(28, 26, 21, 0.06);
+    --shadow-2: 0 2px 8px rgba(28, 26, 21, 0.08);
+    --shadow-3: 0 8px 24px rgba(28, 26, 21, 0.10), 0 2px 6px rgba(28, 26, 21, 0.06);
+    --shadow-4: 0 16px 48px rgba(28, 26, 21, 0.14);
+    --shadow-sheet: 0 -12px 40px rgba(28, 26, 21, 0.16), 0 -2px 8px rgba(28, 26, 21, 0.06);
+
+    --ease-calm: cubic-bezier(0.2, 0, 0, 1);
+    --dur-micro: 120ms;
+    --dur-short: 220ms;
+    --dur-base:  320ms;
+  }
+
+  /* ============================================================
+     RESET
+     ============================================================ */
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; }
+  body {
+    font-family: var(--font-ui);
+    font-size: var(--fs-md);
+    line-height: var(--lh-md);
+    color: var(--text);
+    background:
+      radial-gradient(ellipse at center,
+        #F5F1E8 0%, #EDE7D8 100%);
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: var(--s-4);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    font-feature-settings: 'cv11', 'ss01', 'ss03';
+  }
+  button { font: inherit; color: inherit; background: none; border: none; cursor: pointer; }
+  input, textarea { font: inherit; color: inherit; border: none; outline: none; background: none; resize: none; }
+  a { color: inherit; text-decoration: none; }
+
+  /* ============================================================
+     WINDOW
+     ============================================================ */
+  .window {
+    width: min(960px, 92vw);
+    height: min(640px, 82vh);
+    min-height: 520px;
+    background: var(--bg);
+    border-radius: 12px;
+    box-shadow: var(--shadow-4), 0 0 0 1px rgba(28, 26, 21, 0.06);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    background-image:
+      radial-gradient(ellipse at center top,
+        rgba(255, 255, 255, 0.55) 0%,
+        rgba(255, 255, 255, 0) 60%),
+      linear-gradient(180deg,
+        var(--bg) 0%,
+        #F8F6F1 100%);
+  }
+
+  .title-bar {
+    height: 36px;
+    display: flex;
+    align-items: center;
+    padding: 0 var(--s-4);
+    flex-shrink: 0;
+    -webkit-app-region: drag;
+  }
+  .traffic-lights { display: flex; gap: 8px; }
+  .traffic-lights span {
+    width: 12px; height: 12px; border-radius: 50%; display: block;
+  }
+  .traffic-lights span:nth-child(1) { background: #FF5F56; }
+  .traffic-lights span:nth-child(2) { background: #FFBD2E; }
+  .traffic-lights span:nth-child(3) { background: #27C93F; }
+  .title-bar-label {
+    flex: 1;
+    text-align: center;
+    font-size: var(--fs-xs);
+    color: var(--text-faint);
+    letter-spacing: 0.02em;
+    font-weight: 500;
+    user-select: none;
+  }
+
+  /* ============================================================
+     BACKGROUND: command bar + list (dimmed when sheet is open)
+     ============================================================ */
+  .background {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    filter: saturate(0.85);
+    opacity: 0.55;
+    transition: opacity var(--dur-base) var(--ease-calm);
+    pointer-events: none;
+  }
+
+  .command-bar-wrap {
+    padding: var(--s-4) var(--s-6) var(--s-3) var(--s-6);
+    flex-shrink: 0;
+  }
+  .command-bar {
+    display: flex;
+    align-items: center;
+    gap: var(--s-3);
+    width: 100%;
+    height: 56px;
+    padding: 0 var(--s-5);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    box-shadow: var(--shadow-1);
+  }
+  .command-bar svg.search-icon {
+    width: 18px; height: 18px;
+    color: var(--text-faint);
+    flex-shrink: 0;
+  }
+  .command-bar input {
+    flex: 1;
+    font-size: var(--fs-lg);
+    color: var(--text-faint);
+  }
+  .command-bar .kbd {
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    color: var(--text-faint);
+    padding: 3px 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+    background: var(--surface-2);
+  }
+
+  .list-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    padding: var(--s-2) var(--s-6) var(--s-2) var(--s-6);
+    flex-shrink: 0;
+  }
+  .list-header .count {
+    font-size: var(--fs-xs);
+    color: var(--text-faint);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    font-weight: 500;
+  }
+
+  .vault-list {
+    flex: 1;
+    overflow: hidden;
+    padding: 0 var(--s-3);
+  }
+  .item {
+    display: flex;
+    align-items: center;
+    gap: var(--s-4);
+    height: 60px;
+    padding: 0 var(--s-4);
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .item-icon {
+    width: 32px; height: 32px;
+    flex-shrink: 0;
+    border-radius: var(--r-sm);
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    color: var(--text-muted);
+  }
+  .item-content {
+    flex: 1;
+    min-width: 0;
+  }
+  .item-title {
+    font-size: var(--fs-md);
+    font-weight: 500;
+    color: var(--text);
+  }
+  .item-meta {
+    font-size: var(--fs-xs);
+    color: var(--text-faint);
+  }
+  .item-meta .sep { color: var(--border-strong); margin: 0 6px; }
+
+  /* ============================================================
+     DIMMED BACKDROP (over background, under sheet)
+     ============================================================ */
+  .backdrop {
+    position: absolute;
+    inset: 36px 0 28px 0;
+    background: rgba(28, 26, 21, 0.12);
+    backdrop-filter: blur(0.5px);
+    -webkit-backdrop-filter: blur(0.5px);
+    pointer-events: auto;
+    cursor: pointer;
+  }
+
+  /* ============================================================
+     ITEM DETAIL SHEET (slides up from bottom, ~72% height)
+     ============================================================ */
+  .sheet {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 28px;  /* sit above status bar */
+    height: 72%;
+    background: var(--surface);
+    background-image: linear-gradient(180deg, #FFFFFF 0%, #FDFCF9 100%);
+    border-top-left-radius: var(--r-lg);
+    border-top-right-radius: var(--r-lg);
+    box-shadow: var(--shadow-sheet);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* Sheet header: title + URL + close */
+  .sheet-header {
+    padding: var(--s-6) var(--s-8) var(--s-5) var(--s-8);
+    display: flex;
+    align-items: flex-start;
+    gap: var(--s-4);
+    flex-shrink: 0;
+  }
+  .sheet-header .header-main {
+    flex: 1;
+    min-width: 0;
+  }
+  .sheet-title {
+    font-size: var(--fs-xl);
+    line-height: var(--lh-xl);
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    color: var(--text);
+    margin: 0 0 var(--s-1) 0;
+  }
+  .sheet-url {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: var(--fs-sm);
+    color: var(--text-muted);
+  }
+  .sheet-url:hover { color: var(--accent); }
+  .sheet-url svg {
+    width: 12px; height: 12px;
+    opacity: 0.7;
+  }
+  .close-btn {
+    width: 32px; height: 32px;
+    border-radius: var(--r-sm);
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background var(--dur-micro) var(--ease-calm),
+                color var(--dur-micro) var(--ease-calm);
+    flex-shrink: 0;
+  }
+  .close-btn:hover {
+    background: var(--surface-2);
+    color: var(--text);
+  }
+  .close-btn svg { width: 16px; height: 16px; }
+
+  /* Sheet body scrolls */
+  .sheet-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 0 var(--s-8) var(--s-6) var(--s-8);
+  }
+  .sheet-body::-webkit-scrollbar { width: 8px; }
+  .sheet-body::-webkit-scrollbar-thumb {
+    background: rgba(28, 26, 21, 0.08);
+    border-radius: 4px;
+  }
+
+  /* Field section: label + value + actions */
+  .field {
+    padding: var(--s-4) 0;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .field:last-of-type { border-bottom: none; }
+  .field-label {
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    font-weight: 600;
+    color: var(--text-faint);
+    margin-bottom: var(--s-2);
+    user-select: none;
+  }
+  .field-row {
+    display: flex;
+    align-items: center;
+    gap: var(--s-3);
+    min-height: 28px;
+  }
+  .field-value {
+    flex: 1;
+    font-size: var(--fs-md);
+    color: var(--text);
+    font-weight: 500;
+    letter-spacing: -0.005em;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .field-value.mono {
+    font-family: var(--font-mono);
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    font-size: var(--fs-md);
+  }
+  .field-value.muted {
+    color: var(--text-muted);
+    font-weight: 400;
+  }
+  .field-value.passkey-status {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s-2);
+    color: var(--text);
+  }
+  .passkey-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+
+  /* Icon action buttons (right side of field row) */
+  .field-action {
+    width: 32px; height: 32px;
+    border-radius: var(--r-sm);
+    color: var(--text-faint);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background var(--dur-micro) var(--ease-calm),
+                color var(--dur-micro) var(--ease-calm);
+    flex-shrink: 0;
+  }
+  .field-action:hover {
+    background: var(--surface-2);
+    color: var(--accent);
+  }
+  .field-action svg { width: 16px; height: 16px; }
+
+  /* Notes textarea */
+  .field-notes {
+    width: 100%;
+    font-size: var(--fs-md);
+    line-height: var(--lh-md);
+    color: var(--text);
+    min-height: 52px;
+    padding: var(--s-2) 0 0 0;
+    font-family: var(--font-ui);
+  }
+  .field-notes::placeholder {
+    color: var(--text-faint);
+  }
+
+  /* Footer: metadata + delete */
+  .sheet-footer {
+    padding: var(--s-4) var(--s-8) var(--s-6) var(--s-8);
+    border-top: 1px solid var(--border);
+    background: rgba(246, 244, 238, 0.6);
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--s-4);
+  }
+  .metadata {
+    font-size: var(--fs-xs);
+    color: var(--text-faint);
+    font-variant-numeric: tabular-nums;
+  }
+  .metadata .sep { margin: 0 6px; color: var(--border-strong); }
+  .delete-btn {
+    font-size: var(--fs-sm);
+    color: var(--red-error);
+    font-weight: 500;
+    padding: 6px 12px;
+    border-radius: var(--r-sm);
+    transition: background var(--dur-micro) var(--ease-calm);
+  }
+  .delete-btn:hover {
+    background: rgba(163, 50, 50, 0.08);
+  }
+
+  /* ============================================================
+     STATUS BAR
+     ============================================================ */
+  .status-bar {
+    height: 28px;
+    display: flex;
+    align-items: center;
+    padding: 0 var(--s-5);
+    font-size: var(--fs-xs);
+    color: var(--text-faint);
+    border-top: 1px solid var(--border);
+    background: rgba(255, 255, 255, 0.55);
+    flex-shrink: 0;
+    user-select: none;
+    gap: var(--s-2);
+    position: relative;
+    z-index: 10;
+  }
+  .status-bar .dot {
+    display: inline-block;
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--green-success);
+    box-shadow: 0 0 0 3px rgba(62, 123, 82, 0.15);
+  }
+  .status-bar .spacer { flex: 1; }
+  .status-bar .divider {
+    width: 1px;
+    height: 12px;
+    background: var(--border);
+    margin: 0 var(--s-2);
+  }
+
+  /* ============================================================
+     SPIKE LABEL
+     ============================================================ */
+  .spike-label {
+    position: fixed;
+    top: var(--s-4);
+    left: var(--s-4);
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    color: var(--text-faint);
+    padding: var(--s-1) var(--s-3);
+    background: rgba(255, 255, 255, 0.6);
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+    pointer-events: none;
+  }
+</style>
+</head>
+<body>
+
+<div class="spike-label">week-0 spike · item-detail · v0</div>
+
+<main class="window" role="application" aria-label="unovault">
+
+  <!-- Mac title bar -->
+  <div class="title-bar">
+    <div class="traffic-lights" aria-hidden="true">
+      <span></span><span></span><span></span>
+    </div>
+    <div class="title-bar-label">unovault — default.unovault</div>
+    <div style="width: 52px;" aria-hidden="true"></div>
+  </div>
+
+  <!-- BACKGROUND: dimmed vault list (for context) -->
+  <div class="background" aria-hidden="true">
+    <div class="command-bar-wrap">
+      <div class="command-bar">
+        <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="11" cy="11" r="7"/>
+          <line x1="20" y1="20" x2="16.5" y2="16.5"/>
+        </svg>
+        <input type="text" placeholder="Search or type a command" />
+        <span class="kbd">⌘K</span>
+      </div>
+    </div>
+    <div class="list-header">
+      <span class="count">11 items</span>
+    </div>
+    <div class="vault-list">
+      <div class="item">
+        <div class="item-icon">G</div>
+        <div class="item-content">
+          <div class="item-title">GitHub</div>
+          <div class="item-meta">james@personal<span class="sep">·</span>github.com</div>
+        </div>
+      </div>
+      <div class="item">
+        <div class="item-icon">G</div>
+        <div class="item-content">
+          <div class="item-title">Google</div>
+          <div class="item-meta">james@gmail.com<span class="sep">·</span>google.com</div>
+        </div>
+      </div>
+      <div class="item">
+        <div class="item-icon">N</div>
+        <div class="item-content">
+          <div class="item-title">Notion</div>
+          <div class="item-meta">james@work<span class="sep">·</span>notion.so</div>
+        </div>
+      </div>
+      <div class="item">
+        <div class="item-icon">T</div>
+        <div class="item-content">
+          <div class="item-title">Toss</div>
+          <div class="item-meta">james.personal<span class="sep">·</span>toss.im</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Dimmed backdrop catches clicks to dismiss -->
+  <div class="backdrop" aria-hidden="true"></div>
+
+  <!-- ITEM DETAIL SHEET -->
+  <aside class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+
+    <header class="sheet-header">
+      <div class="header-main">
+        <h2 id="sheet-title" class="sheet-title">GitHub</h2>
+        <a href="https://github.com" class="sheet-url" target="_blank" rel="noreferrer">
+          github.com
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M7 17L17 7"/>
+            <polyline points="7 7 17 7 17 17"/>
+          </svg>
+        </a>
+      </div>
+      <button class="close-btn" aria-label="Close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="6" y1="6" x2="18" y2="18"/>
+          <line x1="18" y1="6" x2="6" y2="18"/>
+        </svg>
+      </button>
+    </header>
+
+    <div class="sheet-body">
+
+      <!-- Username -->
+      <div class="field">
+        <div class="field-label">Username</div>
+        <div class="field-row">
+          <span class="field-value">james@personal</span>
+          <button class="field-action" aria-label="Copy username">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="9" y="9" width="11" height="11" rx="2"/>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- Password -->
+      <div class="field">
+        <div class="field-label">Password</div>
+        <div class="field-row">
+          <span class="field-value mono">••••••••••••••••••</span>
+          <button class="field-action" aria-label="Reveal password" title="Plaintext is drawn as a native overlay — never exposed to the web view">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+              <circle cx="12" cy="12" r="3"/>
+            </svg>
+          </button>
+          <button class="field-action" aria-label="Copy password">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="9" y="9" width="11" height="11" rx="2"/>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- Passkey -->
+      <div class="field">
+        <div class="field-label">Passkey</div>
+        <div class="field-row">
+          <span class="field-value passkey-status">
+            <span class="passkey-dot" aria-hidden="true"></span>
+            Stored <span style="color: var(--text-faint); font-weight: 400; margin-left: 6px;">· created 3 months ago</span>
+          </span>
+          <button class="field-action" aria-label="Use passkey">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M5 12l5 5L20 7"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- Notes -->
+      <div class="field">
+        <div class="field-label">Notes</div>
+        <textarea class="field-notes" rows="2" placeholder="Add notes…">Main dev account. Team access + repo admin rights for unovault/core.</textarea>
+      </div>
+
+    </div>
+
+    <!-- Footer: metadata + delete -->
+    <footer class="sheet-footer">
+      <div class="metadata">
+        Created Jan 12, 2026 <span class="sep">·</span> Modified 2 minutes ago
+      </div>
+      <button class="delete-btn">Delete item</button>
+    </footer>
+
+  </aside>
+
+  <!-- Status bar (stays visible below sheet) -->
+  <div class="status-bar" aria-live="polite">
+    <span class="dot" aria-hidden="true"></span>
+    <span>Synced 3s ago</span>
+    <span class="divider" aria-hidden="true"></span>
+    <span>iCloud Drive</span>
+    <span class="spacer"></span>
+    <span>11 items</span>
+    <span class="divider" aria-hidden="true"></span>
+    <span>mbp-james</span>
+  </div>
+
+</main>
+
+</body>
+</html>

@@ -1,0 +1,33 @@
+# Rust
+/target
+**/*.rs.bk
+Cargo.lock.bak
+
+# macOS
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Node / Tauri (will be added when we scaffold the app)
+node_modules/
+/app/src-tauri/target/
+/app/node_modules/
+/app/dist/
+
+# Secrets — never commit a real vault
+*.unovault
+!design/**/*.unovault/
+*.unovault-backup
+/.env
+/.env.local
+
+# Design spike artifacts that are generated, not authored
+/design/spike/generated/

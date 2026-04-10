@@ -1,0 +1,419 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>unovault — locked vault home (week 0 spike)</title>
+
+<!-- Inter + Inter Display from Google Fonts (Inter 4.0 includes display variant) -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+<style>
+  /* ============================================================
+     DESIGN TOKENS v0 — LIGHT MODE
+     ============================================================ */
+  :root {
+    /* color */
+    --bg:             #FBFAF7;   /* warm paper, NOT #FFFFFF */
+    --surface:        #FFFFFF;
+    --surface-2:      #F2F0EA;
+    --border:         #E6E2D8;
+    --border-strong:  #C9C3B3;
+    --text:           #1C1A15;   /* warm near-black */
+    --text-muted:     #5E594C;
+    --text-faint:     #948E7E;
+    --accent:         #B8532C;   /* burnt terracotta — unovault signature */
+    --accent-hover:   #9C4322;
+    --accent-soft:    rgba(184, 83, 44, 0.08);
+    --amber-warn:     #B8782C;
+    --red-error:      #A33232;
+    --green-success:  #3E7B52;
+
+    /* typography */
+    --font-ui:        'Inter', -apple-system, system-ui, sans-serif;
+    --font-serif:     'Iowan Old Style', 'Palatino', 'Charter', serif;
+    --font-mono:      'JetBrains Mono', 'SF Mono', 'Menlo', monospace;
+
+    /* scale (px / line-height) */
+    --fs-xs:   11px; --lh-xs:   14px;
+    --fs-sm:   13px; --lh-sm:   18px;
+    --fs-md:   15px; --lh-md:   22px;
+    --fs-lg:   18px; --lh-lg:   26px;
+    --fs-xl:   24px; --lh-xl:   32px;
+    --fs-2xl:  32px; --lh-2xl:  40px;
+    --fs-3xl:  48px; --lh-3xl:  56px;
+
+    /* spacing (4px base) */
+    --s-1:  4px;  --s-2: 8px;   --s-3: 12px;  --s-4: 16px;
+    --s-5: 20px;  --s-6: 24px;  --s-8: 32px;  --s-10: 40px;
+    --s-12: 48px; --s-16: 64px; --s-20: 80px;
+
+    /* radius */
+    --r-sm:   4px;
+    --r-md:  10px;
+    --r-lg:  16px;
+
+    /* shadow */
+    --shadow-1: 0 1px 2px rgba(28, 26, 21, 0.06);
+    --shadow-2: 0 2px 8px rgba(28, 26, 21, 0.08);
+    --shadow-3: 0 8px 24px rgba(28, 26, 21, 0.10), 0 2px 6px rgba(28, 26, 21, 0.06);
+    --shadow-4: 0 16px 48px rgba(28, 26, 21, 0.14);
+
+    /* motion */
+    --ease-calm: cubic-bezier(0.2, 0, 0, 1);
+    --dur-micro: 120ms;
+    --dur-short: 220ms;
+    --dur-base:  320ms;
+  }
+
+  /* ============================================================
+     RESET
+     ============================================================ */
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; }
+  body {
+    font-family: var(--font-ui);
+    font-size: var(--fs-md);
+    line-height: var(--lh-md);
+    color: var(--text);
+    background: var(--bg);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    font-feature-settings: 'cv11', 'ss01', 'ss03'; /* Inter display-like tweaks */
+  }
+  button { font: inherit; color: inherit; background: none; border: none; cursor: pointer; }
+  input { font: inherit; color: inherit; border: none; outline: none; background: none; }
+  a { color: inherit; text-decoration: none; }
+
+  /* ============================================================
+     APP SHELL (Mac window simulation)
+     ============================================================ */
+  .window {
+    /* mimic macOS window chrome so the mockup reads as a real desktop app */
+    width: min(960px, 92vw);
+    max-width: 960px;
+    height: min(640px, 82vh);
+    min-height: 520px;
+    margin: 4vh auto;
+    background: var(--bg);
+    border-radius: 12px;
+    box-shadow: var(--shadow-4), 0 0 0 1px rgba(28, 26, 21, 0.06);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+
+    /* very subtle vignette to add warmth without being a gradient */
+    background-image:
+      radial-gradient(ellipse at center top,
+        rgba(255, 255, 255, 0.6) 0%,
+        rgba(255, 255, 255, 0) 70%),
+      linear-gradient(180deg,
+        var(--bg) 0%,
+        #F8F6F1 100%);
+  }
+
+  /* macOS traffic lights */
+  .title-bar {
+    height: 36px;
+    display: flex;
+    align-items: center;
+    padding: 0 var(--s-4);
+    border-bottom: 1px solid transparent;
+    flex-shrink: 0;
+    -webkit-app-region: drag;
+  }
+  .traffic-lights {
+    display: flex;
+    gap: 8px;
+  }
+  .traffic-lights span {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    display: block;
+  }
+  .traffic-lights span:nth-child(1) { background: #FF5F56; }
+  .traffic-lights span:nth-child(2) { background: #FFBD2E; }
+  .traffic-lights span:nth-child(3) { background: #27C93F; }
+  .title-bar-label {
+    flex: 1;
+    text-align: center;
+    font-size: var(--fs-xs);
+    color: var(--text-faint);
+    letter-spacing: 0.02em;
+    font-weight: 500;
+    user-select: none;
+  }
+
+  /* ============================================================
+     LOCKED VAULT HOME — the only screen that exists in Week 0
+     ============================================================ */
+  .locked-canvas {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: var(--s-8);
+    position: relative;
+  }
+
+  .vault-card {
+    width: 380px;
+    padding: var(--s-10) var(--s-10) var(--s-8) var(--s-10);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    box-shadow: var(--shadow-3);
+    text-align: center;
+
+    /* let the card breathe from the background — subtle warmth */
+    background-image: linear-gradient(180deg, #FFFFFF 0%, #FDFCF9 100%);
+  }
+
+  /* Brand mark — serif wordmark, quiet but unmistakable */
+  .brand {
+    font-family: var(--font-serif);
+    font-size: var(--fs-lg);
+    font-weight: 400;
+    color: var(--text);
+    letter-spacing: -0.005em;
+    line-height: 1;
+    margin: 0 0 var(--s-2) 0;
+    font-style: italic;
+  }
+  .brand::first-letter { /* tiny detail — drop cap effect without being loud */
+    color: var(--accent);
+  }
+
+  /* Vault filename — mono so it reads as "a file" */
+  .vault-filename {
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    color: var(--text-faint);
+    letter-spacing: 0.01em;
+    margin: 0 0 var(--s-8) 0;
+  }
+
+  /* Master password label (visually hidden but present for a11y) */
+  .sr-only {
+    position: absolute;
+    width: 1px; height: 1px;
+    padding: 0; margin: -1px;
+    overflow: hidden;
+    clip: rect(0,0,0,0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  /* Input */
+  .password-input {
+    width: 100%;
+    height: 52px;
+    padding: 0 var(--s-4);
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+    font-size: var(--fs-md);
+    color: var(--text);
+    letter-spacing: 0.08em; /* give dotted password some breathing */
+    transition: border-color var(--dur-micro) var(--ease-calm),
+                background var(--dur-micro) var(--ease-calm),
+                box-shadow var(--dur-micro) var(--ease-calm);
+  }
+  .password-input::placeholder {
+    color: var(--text-faint);
+    letter-spacing: 0;
+  }
+  .password-input:focus {
+    background: var(--surface);
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+
+  /* Primary button (Touch ID) */
+  .btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--s-2);
+    width: 100%;
+    height: 52px;
+    border-radius: var(--r-sm);
+    font-size: var(--fs-md);
+    font-weight: 500;
+    letter-spacing: -0.005em;
+    transition: background var(--dur-micro) var(--ease-calm),
+                transform var(--dur-micro) var(--ease-calm),
+                box-shadow var(--dur-micro) var(--ease-calm);
+  }
+  .btn:active { transform: translateY(1px); }
+
+  .btn-primary {
+    background: var(--accent);
+    color: #FFF8F0;
+    box-shadow: var(--shadow-1), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  }
+  .btn-primary:hover {
+    background: var(--accent-hover);
+  }
+
+  .btn-secondary {
+    background: transparent;
+    color: var(--text);
+    border: 1px solid var(--border-strong);
+  }
+  .btn-secondary:hover {
+    background: var(--surface-2);
+  }
+
+  /* Button icon */
+  .btn svg {
+    width: 18px;
+    height: 18px;
+    flex-shrink: 0;
+  }
+
+  /* Gap between form elements */
+  .stack > * + * { margin-top: var(--s-3); }
+
+  /* Recovery link at the bottom */
+  .recovery-link {
+    display: inline-block;
+    margin-top: var(--s-6);
+    font-size: var(--fs-sm);
+    color: var(--text-faint);
+    border-bottom: 1px dashed var(--border-strong);
+    padding-bottom: 1px;
+    transition: color var(--dur-micro) var(--ease-calm),
+                border-color var(--dur-micro) var(--ease-calm);
+  }
+  .recovery-link:hover {
+    color: var(--text-muted);
+    border-bottom-color: var(--text-muted);
+  }
+
+  /* ============================================================
+     STATUS BAR (bottom of window)
+     ============================================================ */
+  .status-bar {
+    height: 24px;
+    display: flex;
+    align-items: center;
+    padding: 0 var(--s-4);
+    font-size: var(--fs-xs);
+    color: var(--text-faint);
+    border-top: 1px solid var(--border);
+    background: rgba(255, 255, 255, 0.4);
+    flex-shrink: 0;
+    user-select: none;
+  }
+  .status-bar .dot {
+    display: inline-block;
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--text-faint);
+    margin-right: var(--s-2);
+  }
+  .status-bar .spacer { flex: 1; }
+
+  /* ============================================================
+     PAGE FRAME (dev-only — lets the window sit on a backdrop)
+     ============================================================ */
+  body {
+    background:
+      radial-gradient(ellipse at center,
+        #F5F1E8 0%, #EDE7D8 100%);
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: var(--s-4);
+  }
+
+  /* Print-style label in the corner so reviewers know what they're looking at */
+  .spike-label {
+    position: fixed;
+    top: var(--s-4);
+    left: var(--s-4);
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    color: var(--text-faint);
+    padding: var(--s-1) var(--s-3);
+    background: rgba(255, 255, 255, 0.6);
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+    pointer-events: none;
+  }
+</style>
+</head>
+<body>
+
+<div class="spike-label">week-0 spike · locked-home · v0</div>
+
+<main class="window" role="application" aria-label="unovault">
+
+  <!-- Mac title bar -->
+  <div class="title-bar">
+    <div class="traffic-lights" aria-hidden="true">
+      <span></span><span></span><span></span>
+    </div>
+    <div class="title-bar-label">unovault</div>
+    <div style="width: 52px;" aria-hidden="true"></div>
+  </div>
+
+  <!-- Locked canvas -->
+  <section class="locked-canvas">
+    <div class="vault-card">
+      <h1 class="brand" aria-label="unovault">unovault</h1>
+      <p class="vault-filename">default.unovault</p>
+
+      <form class="stack" autocomplete="off" onsubmit="event.preventDefault()">
+        <label for="master" class="sr-only">Master password</label>
+        <input
+          id="master"
+          type="password"
+          class="password-input"
+          placeholder="Master password"
+          autofocus
+          autocomplete="current-password"
+        />
+
+        <button type="button" class="btn btn-primary" id="touchid-btn" aria-label="Unlock with Touch ID">
+          <!-- Fingerprint icon, monochrome line work, not emoji -->
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 11v4a2 2 0 0 1-2 2"/>
+            <path d="M16 11a4 4 0 0 0-8 0v4a4 4 0 0 1-1.5 3.12"/>
+            <path d="M8 11a4 4 0 0 1 8 0v4"/>
+            <path d="M20 11a8 8 0 0 0-15.5-2.7"/>
+            <path d="M4 11v3"/>
+            <path d="M20 14v1a6 6 0 0 1-.8 3"/>
+          </svg>
+          <span>Unlock with Touch ID</span>
+        </button>
+
+        <button type="submit" class="btn btn-secondary">
+          <span>Unlock</span>
+        </button>
+      </form>
+
+      <a href="#" class="recovery-link" tabindex="0">
+        Forgot master password? Use recovery phrase
+      </a>
+    </div>
+  </section>
+
+  <!-- Status bar (bottom) -->
+  <div class="status-bar" aria-live="polite">
+    <span class="dot" aria-hidden="true"></span>
+    <span>Vault locked</span>
+    <span class="spacer"></span>
+    <span>mbp · local</span>
+  </div>
+
+</main>
+
+</body>
+</html>

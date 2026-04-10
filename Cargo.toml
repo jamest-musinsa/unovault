@@ -1,0 +1,76 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/unovault-core",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+rust-version = "1.82"
+license = "MIT"
+repository = "https://github.com/jamestdokgo/unovault"
+authors = ["James <james@unovault.app>"]
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+# Panic policy: password manager code must never panic on valid input.
+# Every exception requires a `#[allow(...)]` with a comment explaining why.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unimplemented = "deny"
+todo = "deny"
+
+# Additional guards
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+
+[workspace.dependencies]
+# Error taxonomy
+thiserror = "1.0"
+
+# Memory safety
+zeroize = { version = "1.8", features = ["zeroize_derive"] }
+
+# Identifiers
+uuid = { version = "1.11", features = ["v4", "serde"] }
+
+# Serialization (manifest.json only — chunks use postcard)
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Compact binary serialization for chunk Event payloads
+postcard = { version = "1.0", features = ["use-std"] }
+
+# Cryptography (RustCrypto — audited, actively maintained)
+argon2 = "0.5"
+chacha20poly1305 = { version = "0.10", features = ["alloc"] }
+hmac = "0.12"
+sha2 = "0.10"
+hkdf = "0.12"
+subtle = "2.6"
+base64 = "0.22"
+
+# OS randomness
+rand = "0.9"
+
+# Testing
+proptest = "1.5"
+tempfile = "3.14"
+
+[profile.release]
+# Aggressive optimization for a shipped binary
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+opt-level = 3
+
+[profile.dev]
+# Faster dev builds; debug still on
+opt-level = 0
+debug = true
