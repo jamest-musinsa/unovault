@@ -1,8 +1,10 @@
 [workspace]
 resolver = "2"
 members = [
+    "app/src-tauri",
     "crates/unovault-core",
     "crates/unovault-ffi",
+    "crates/unovault-macros",
     "crates/uniffi-bindgen",
 ]
 
@@ -62,6 +64,10 @@ rand = "0.9"
 
 # FFI scaffolding for the Rust <-> Swift bridge
 uniffi = { version = "0.28", features = ["cli"] }
+
+# Tauri v2 app shell
+tauri = { version = "2", features = [] }
+tauri-build = { version = "2", features = [] }
 
 # Testing
 proptest = "1.5"

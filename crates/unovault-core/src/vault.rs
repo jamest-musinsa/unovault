@@ -119,7 +119,7 @@ impl fmt::Debug for ItemState {
 }
 
 impl ItemState {
-    fn from_snapshot(id: ItemId, snapshot: ItemSnapshot, timestamp_ms: u64) -> Self {
+    pub(crate) fn from_snapshot(id: ItemId, snapshot: ItemSnapshot, timestamp_ms: u64) -> Self {
         Self {
             id,
             title: snapshot.title,

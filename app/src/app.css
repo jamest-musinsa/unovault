@@ -1,0 +1,208 @@
+/*
+ * Global styles — design token v0 values pulled verbatim from the
+ * design spec in the design doc.
+ *
+ * Week 7-9 intentionally does not consolidate this into a full
+ * component-based design system; that lands in weeks 10-13. The
+ * goal here is "the values are correct, the structure is ugly."
+ * A reviewer comparing the app to design/spike/*.html should see
+ * the same colors, the same fonts, the same radii — but rougher
+ * spacing and fewer polished details.
+ */
+
+:root {
+  /* Color — light mode (dark mode lands with design system work) */
+  --bg: #FBFAF7;
+  --surface: #FFFFFF;
+  --surface-2: #F2F0EA;
+  --surface-hover: #F6F4EE;
+  --border: #E6E2D8;
+  --border-subtle: #EFECE3;
+  --border-strong: #C9C3B3;
+  --text: #1C1A15;
+  --text-muted: #5E594C;
+  --text-faint: #948E7E;
+  --accent: #B8532C;            /* burnt terracotta */
+  --accent-hover: #9C4322;
+  --accent-soft: rgba(184, 83, 44, 0.08);
+  --amber-warn: #B8782C;
+  --red-error: #A33232;
+  --green-success: #3E7B52;
+
+  /* Typography */
+  --font-ui: 'Inter', -apple-system, system-ui, sans-serif;
+  --font-serif: 'Iowan Old Style', 'Palatino', 'Charter', serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', 'Menlo', monospace;
+
+  /* Scale */
+  --fs-xs: 11px; --lh-xs: 14px;
+  --fs-sm: 13px; --lh-sm: 18px;
+  --fs-md: 15px; --lh-md: 22px;
+  --fs-lg: 18px; --lh-lg: 26px;
+  --fs-xl: 24px; --lh-xl: 32px;
+  --fs-2xl: 32px; --lh-2xl: 40px;
+
+  /* Spacing */
+  --s-1: 4px; --s-2: 8px; --s-3: 12px; --s-4: 16px;
+  --s-5: 20px; --s-6: 24px; --s-8: 32px; --s-10: 40px;
+  --s-12: 48px;
+
+  /* Radius */
+  --r-sm: 4px;
+  --r-md: 10px;
+  --r-lg: 16px;
+
+  /* Shadow */
+  --shadow-1: 0 1px 2px rgba(28, 26, 21, 0.06);
+  --shadow-2: 0 2px 8px rgba(28, 26, 21, 0.08);
+  --shadow-3: 0 8px 24px rgba(28, 26, 21, 0.10), 0 2px 6px rgba(28, 26, 21, 0.06);
+
+  /* Motion */
+  --ease-calm: cubic-bezier(0.2, 0, 0, 1);
+  --dur-micro: 120ms;
+  --dur-short: 220ms;
+  --dur-base: 320ms;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html, body, #app {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
+  font-family: var(--font-ui);
+  font-size: var(--fs-md);
+  line-height: var(--lh-md);
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+}
+
+input, textarea {
+  font: inherit;
+  color: inherit;
+  border: none;
+  outline: none;
+  background: none;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+/* Primary button (terracotta fill) */
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-2);
+  height: 40px;
+  padding: 0 var(--s-5);
+  background: var(--accent);
+  color: #FFF8F0;
+  border-radius: var(--r-sm);
+  font-weight: 500;
+  transition: background var(--dur-micro) var(--ease-calm);
+}
+.btn-primary:hover { background: var(--accent-hover); }
+.btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Secondary button (outline) */
+.btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-2);
+  height: 40px;
+  padding: 0 var(--s-5);
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  font-weight: 500;
+  transition: background var(--dur-micro) var(--ease-calm);
+}
+.btn-secondary:hover { background: var(--surface-2); }
+
+/* Text input */
+.input {
+  width: 100%;
+  height: 40px;
+  padding: 0 var(--s-4);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  font-size: var(--fs-md);
+  color: var(--text);
+  transition: border-color var(--dur-micro) var(--ease-calm),
+              box-shadow var(--dur-micro) var(--ease-calm);
+}
+.input::placeholder { color: var(--text-faint); }
+.input:focus {
+  background: var(--surface);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* Error banner */
+.error-banner {
+  padding: var(--s-3) var(--s-4);
+  background: rgba(163, 50, 50, 0.08);
+  border: 1px solid rgba(163, 50, 50, 0.3);
+  color: var(--red-error);
+  border-radius: var(--r-sm);
+  font-size: var(--fs-sm);
+}
+
+/* Status bar at window bottom */
+.status-bar {
+  height: 28px;
+  display: flex;
+  align-items: center;
+  padding: 0 var(--s-5);
+  font-size: var(--fs-xs);
+  color: var(--text-faint);
+  border-top: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.4);
+  user-select: none;
+  gap: var(--s-2);
+}
+.status-bar .spacer { flex: 1; }
+.status-bar .dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+.status-bar .dot.ok {
+  background: var(--green-success);
+  box-shadow: 0 0 0 3px rgba(62, 123, 82, 0.15);
+}
+
+/* Visually-hidden but accessible */
+.sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0,0,0,0);
+  white-space: nowrap;
+  border: 0;
+}

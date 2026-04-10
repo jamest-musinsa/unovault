@@ -39,6 +39,7 @@ pub mod error;
 pub mod event;
 pub mod format;
 pub mod install_id;
+pub mod ipc;
 pub mod secret;
 pub mod sync;
 pub mod vault;
@@ -54,6 +55,7 @@ pub use event::{
 };
 pub use format::{VaultManifest, VaultPaths};
 pub use install_id::{InstallId, InstallIdStore};
+pub use ipc::{IpcSafe, IpcString, ItemKindTag, ItemMetadata};
 pub use secret::Secret;
 pub use vault::{fold_events, ItemState, Vault};
 

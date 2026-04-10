@@ -1,0 +1,9 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default capability set. Grants the main window permission to invoke the small handful of unovault commands declared in src/commands.rs — nothing else. No filesystem, no shell, no clipboard plugin — clipboard writes happen inside Rust via tauri-plugin-clipboard-manager once it lands; for now the command is a no-op placeholder.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default"
+  ]
+}

@@ -1,0 +1,48 @@
+[package]
+name = "unovault-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Tauri v2 desktop shell for unovault — calls unovault-core through the safe IPC boundary"
+
+[lints]
+workspace = true
+
+[build-dependencies]
+tauri-build.workspace = true
+
+[dependencies]
+# Vault engine
+unovault-core = { path = "../../crates/unovault-core" }
+unovault-macros = { path = "../../crates/unovault-macros" }
+
+# Tauri v2 runtime
+tauri.workspace = true
+
+# Serialization + errors — everything crossing IPC is serde, so the
+# backend crate needs serde in addition to what unovault-core brings.
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+# Install-ID directory lives under the user's data dir, resolved at
+# runtime via `dirs` (small cross-platform helper, no Apple APIs).
+dirs = "5"
+
+[dev-dependencies]
+tempfile.workspace = true
+
+# This crate emits a cdylib for the Tauri runtime plus an rlib so we
+# can unit-test the command handlers in-process. The rlib is what the
+# `#[cfg(test)]` test modules pick up.
+[lib]
+name = "unovault_app"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[[bin]]
+name = "unovault-app"
+path = "src/main.rs"
