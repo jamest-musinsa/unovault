@@ -1,0 +1,31 @@
+[package]
+name = "unovault-ffi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "FFI shim exposing unovault-core to Swift via UniFFI"
+
+[lints]
+workspace = true
+
+[lib]
+# cdylib: the actual .dylib that Swift links against.
+# staticlib: a static archive for scenarios where Swift wants to link
+#            statically (e.g. inside an .xcframework that has to ship
+#            bundled). Not used by the current smoke test but cheap to
+#            produce alongside the dylib.
+# rlib: lets downstream Rust code (tests, build.rs helpers) depend on
+#       this crate normally.
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[dependencies]
+unovault-core = { path = "../unovault-core" }
+uniffi.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,0 +1,4 @@
+module unovault_ffiFFI {
+    header "unovault_ffiFFI.h"
+    export *
+}

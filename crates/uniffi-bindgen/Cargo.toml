@@ -1,0 +1,20 @@
+[package]
+name = "uniffi-bindgen"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Thin wrapper around uniffi's bindgen binary so it lives in the workspace and does not need a global install"
+publish = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/main.rs"
+
+[dependencies]
+uniffi.workspace = true

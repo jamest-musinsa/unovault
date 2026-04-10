@@ -10,7 +10,7 @@ Full design doc: `~/.gstack/projects/jamest-musinsa-unovault/james-main-design-2
 
 ## Status
 
-**Week 1.** Cargo workspace set up. `unovault-core` has the error taxonomy and `Secret<T>` wrapper. Everything else is still to build. No Tauri app shell yet — that lands in weeks 5–9.
+**Week 5-6.** Rust vault engine (`unovault-core`) is feature-complete for v1: error taxonomy, `Secret<T>`, LWW events, crypto (argon2id + XChaCha20-Poly1305 + HMAC-SHA256), install ID, `.unovault` bundle format, integrated `Vault` with week-4 end-to-end save/reopen gate, and `FileSystemBackend` trait with local + chaos harness. Rust ↔ Swift bridge (`unovault-ffi`) exposes the vault lifecycle via UniFFI; a Swift Package under `swift/UnovaultFFI/` compiles the generated bindings and runs five XCTest smoke tests that pass end-to-end through the FFI boundary. Touch ID / Secure Enclave / iCloud `NSMetadataQuery` are intentionally deferred until Apple Developer entitlements are available (see `swift/UnovaultFFI/Sources/UnovaultFFI/TouchIDSketch.swift` for the design sketch). Tauri app shell lands in weeks 7-9.
 
 ## Architectural rules (non-negotiable)
 
@@ -26,21 +26,42 @@ Full design doc: `~/.gstack/projects/jamest-musinsa-unovault/james-main-design-2
 
 ```
 crates/
-└── unovault-core/     vault engine — format, crypto, LWW events
-    └── src/
-        ├── lib.rs     module root + architectural rules as doc comments
-        ├── error.rs   VaultError + 5 sub-enums (UserActionable, NetworkTransient,
-        │              HardwareIssue, BugInUnovault, PlatformPolicy)
-        └── secret.rs  Secret<T> newtype — zeroize on drop, redacted Debug,
-                       no Display, no Clone
+├── unovault-core/          vault engine (93 tests + 3 proptest properties)
+│   └── src/
+│       ├── lib.rs          module root + architectural rules as doc comments
+│       ├── error.rs        VaultError 5-category taxonomy
+│       ├── secret.rs       Secret<T> newtype (zeroize, redacted Debug)
+│       ├── event.rs        LWW event log schema + deterministic ordering
+│       ├── crypto.rs       argon2id / HKDF / XChaCha20-Poly1305 / HMAC-SHA256
+│       ├── install_id.rs   install sharding key (v0 file-backed store)
+│       ├── format.rs       .unovault bundle directory + chunk IO
+│       ├── sync.rs         FileSystemBackend trait + local + chaos harness
+│       └── vault.rs        integrated Vault (week-4 gate test lives here)
+├── unovault-ffi/           Swift-facing FFI shim via UniFFI (6 tests)
+│   └── src/lib.rs          FfiVault, FfiItemKind, FfiItemSummary, FfiError
+└── uniffi-bindgen/         thin wrapper around uniffi_bindgen_main for
+                            deterministic in-workspace binding generation
+```
+
+Swift side:
+
+```
+swift/
+├── generated/              uniffi-bindgen output (regenerated on demand)
+└── UnovaultFFI/            Swift Package wrapping the Rust cdylib
+    ├── Package.swift       unsafeFlags link to target/debug/libunovault_ffi.dylib
+    ├── Sources/UnovaultFFI/
+    │   ├── UnovaultFFI.swift   generated Swift bindings (do not edit)
+    │   └── TouchIDSketch.swift design sketch, disabled until entitlements
+    ├── Sources/UnovaultFFIC/   C header + modulemap
+    └── Tests/UnovaultFFITests/ 5 XCTests, runs in ~25s via real argon2id
 ```
 
 Future crates (not yet scaffolded):
 
 - `unovault-import` — 1Password 1pux, Bitwarden JSON, KeePass XML parsers
 - `unovault-passkey` — CTAP2 authenticator via `passkey-rs` (Mac-only, Cargo feature)
-- `unovault-sync` — async `SyncBackend` trait + iCloud impl
-- `unovault-biometric` — thin Rust wrapper over Swift `LocalAuthentication`
+- `unovault-biometric` — thin Rust wrapper over Swift `LocalAuthentication` (lands with entitlements)
 
 ## Build + test commands
 
@@ -55,9 +76,21 @@ cargo test -p unovault-core
 
 # Format the whole workspace
 cargo fmt
+
+# Swift bridge: build the Rust cdylib, regenerate Swift bindings
+# (only needed if the FFI surface in crates/unovault-ffi changed), then
+# run the Swift XCTest smoke tests.
+cargo build -p unovault-ffi
+cargo run -p uniffi-bindgen -- generate \
+    --library target/debug/libunovault_ffi.dylib \
+    --language swift \
+    --out-dir swift/generated
+cp swift/generated/unovault_ffi.swift swift/UnovaultFFI/Sources/UnovaultFFI/UnovaultFFI.swift
+cp swift/generated/unovault_ffiFFI.h  swift/UnovaultFFI/Sources/UnovaultFFIC/unovault_ffiFFI.h
+cd swift/UnovaultFFI && swift test
 ```
 
-No Tauri build commands yet — they land in weeks 5–9 when the app shell is scaffolded.
+No Tauri build commands yet — they land in weeks 7–9 when the app shell is scaffolded.
 
 ## Design references
 

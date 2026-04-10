@@ -22,6 +22,15 @@ node_modules/
 /app/node_modules/
 /app/dist/
 
+# Swift Package Manager build artifacts
+/swift/**/.build/
+/swift/**/Package.resolved
+/swift/**/.swiftpm/
+# Generated uniffi Swift bindings — the *canonical* copies live under
+# swift/UnovaultFFI/Sources/{UnovaultFFI,UnovaultFFIC}/. The swift/generated/
+# directory is a scratch space for regeneration runs.
+/swift/generated/
+
 # Secrets — never commit a real vault
 *.unovault
 !design/**/*.unovault/

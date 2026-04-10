@@ -40,6 +40,7 @@ pub mod event;
 pub mod format;
 pub mod install_id;
 pub mod secret;
+pub mod sync;
 pub mod vault;
 
 pub use crypto::{DerivedKeys, KdfParams};

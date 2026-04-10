@@ -60,6 +60,54 @@ jobs:
         env:
           RUSTDOCFLAGS: "-D warnings"
 
+  swift-bridge:
+    name: swift FFI smoke test
+    runs-on: macos-14
+    needs: check
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show Swift + Rust versions
+        run: swift --version && rustc --version
+
+      - name: Cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-ffi-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-ffi-
+            ${{ runner.os }}-cargo-
+
+      - name: Build FFI cdylib
+        run: cargo build -p unovault-ffi
+
+      - name: Regenerate Swift bindings
+        run: |
+          cargo run -p uniffi-bindgen -- generate \
+            --library target/debug/libunovault_ffi.dylib \
+            --language swift \
+            --out-dir swift/generated
+          cp swift/generated/unovault_ffi.swift \
+             swift/UnovaultFFI/Sources/UnovaultFFI/UnovaultFFI.swift
+          cp swift/generated/unovault_ffiFFI.h \
+             swift/UnovaultFFI/Sources/UnovaultFFIC/unovault_ffiFFI.h
+
+      - name: Check bindings are in sync with committed copies
+        run: |
+          if ! git diff --quiet swift/UnovaultFFI/Sources/UnovaultFFI/UnovaultFFI.swift swift/UnovaultFFI/Sources/UnovaultFFIC/unovault_ffiFFI.h; then
+            echo "ERROR: Swift bindings in swift/UnovaultFFI/ are out of sync with crates/unovault-ffi."
+            echo "Run the regeneration snippet in CLAUDE.md and commit the result."
+            exit 1
+          fi
+
+      - name: Swift test
+        working-directory: swift/UnovaultFFI
+        run: swift test
+
   supply-chain:
     name: cargo-deny + cargo-audit
     runs-on: ubuntu-latest
