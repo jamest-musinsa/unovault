@@ -1,0 +1,23 @@
+/*
+ * global.css — single entry point loaded by main.ts.
+ *
+ * Order matters:
+ *   1. tokens.css     defines CSS variables the reset + typography rely on
+ *   2. reset.css      baselines html/body/form elements using those tokens
+ *   3. typography.css utility classes that reach for the same tokens
+ */
+
+@import './tokens.css';
+@import './reset.css';
+@import './typography.css';
+
+/* View transitions — opt in per view with `view-transition-name: …`
+ * inside a component's style block. The names themselves live next to
+ * the components that use them; this block just sets the project-wide
+ * defaults so every transition uses the calm ease curve and the house
+ * duration. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: var(--dur-base);
+  animation-timing-function: var(--ease-calm);
+}

@@ -1,0 +1,215 @@
+/*
+ * tokens.css — the single source of truth for unovault's visual system.
+ *
+ * Every value here is duplicated from the "Design Spec v0" section of
+ * the design doc. Do not tweak in the browser inspector and call it
+ * done — if a value here needs to change, update the design doc too
+ * so the spec stays the canonical reference.
+ *
+ * Naming convention:
+ *
+ *   --<group>-<role>   (semantic, preferred)
+ *     --bg / --surface / --text / --accent / --border
+ *
+ *   --<group>-<step>   (scale, for building semantic tokens)
+ *     --s-4 / --fs-md / --r-sm
+ *
+ * Always prefer the semantic name at the call site. The scale tokens
+ * are building blocks — if a component needs `--s-4`, that usually
+ * means a new semantic alias should be added here first.
+ *
+ * Dark mode lives at the bottom via `prefers-color-scheme: dark`,
+ * overriding the color tokens only. Scales (typography, spacing,
+ * radius, motion) are shared.
+ */
+
+:root {
+  /* =====================================================================
+   * COLOR — LIGHT MODE (default)
+   * ===================================================================== */
+
+  --bg:               #FBFAF7;          /* warm paper, NOT #FFFFFF */
+  --surface:          #FFFFFF;          /* cards, popovers — sparingly */
+  --surface-2:        #F2F0EA;          /* secondary panels, form fields */
+  --surface-hover:    #F6F4EE;          /* row hover state */
+  --surface-active:   #EFECE3;          /* pressed state */
+  --border:           #E6E2D8;          /* 1px dividers, card outlines */
+  --border-subtle:    #EFECE3;          /* row separators */
+  --border-strong:    #C9C3B3;          /* secondary button outline */
+
+  --text:             #1C1A15;          /* warm near-black */
+  --text-muted:       #5E594C;          /* secondary copy */
+  --text-faint:       #948E7E;          /* tertiary, metadata */
+  --text-inverse:     #FFF8F0;          /* text on accent fill */
+
+  --accent:           #B8532C;          /* unovault signature terracotta */
+  --accent-hover:     #9C4322;
+  --accent-active:    #823618;
+  --accent-soft:      rgba(184, 83, 44, 0.08);
+  --accent-ring:      rgba(184, 83, 44, 0.22);   /* focus rings */
+
+  --amber-warn:       #B8782C;
+  --red-error:        #A33232;
+  --red-error-soft:   rgba(163, 50, 50, 0.08);
+  --green-success:    #3E7B52;
+  --green-success-soft: rgba(62, 123, 82, 0.15);
+
+  --overlay-scrim:    rgba(28, 26, 21, 0.18);    /* behind modal sheets */
+
+  /* =====================================================================
+   * TYPOGRAPHY
+   * ===================================================================== */
+
+  --font-ui:    'Inter', -apple-system, system-ui, sans-serif;
+  --font-serif: 'Iowan Old Style', 'Palatino', 'Charter', serif;
+  --font-mono:  'JetBrains Mono', 'SF Mono', 'Menlo', monospace;
+
+  /* Scale — 1.2 minor-third ratio (px / line-height) */
+  --fs-xs:   11px;  --lh-xs:  14px;
+  --fs-sm:   13px;  --lh-sm:  18px;
+  --fs-md:   15px;  --lh-md:  22px;
+  --fs-lg:   18px;  --lh-lg:  26px;
+  --fs-xl:   24px;  --lh-xl:  32px;
+  --fs-2xl:  32px;  --lh-2xl: 40px;
+  --fs-3xl:  48px;  --lh-3xl: 56px;
+
+  /* Weights */
+  --fw-regular:  400;
+  --fw-medium:   500;
+  --fw-semibold: 600;
+
+  /* =====================================================================
+   * SPACING — 4px base unit
+   * ===================================================================== */
+
+  --s-0:   0;
+  --s-1:   4px;
+  --s-2:   8px;
+  --s-3:  12px;
+  --s-4:  16px;
+  --s-5:  20px;
+  --s-6:  24px;
+  --s-8:  32px;
+  --s-10: 40px;
+  --s-12: 48px;
+  --s-16: 64px;
+  --s-20: 80px;
+
+  /* =====================================================================
+   * RADIUS
+   * ===================================================================== */
+
+  --r-sm:    4px;    /* inputs, buttons, pills */
+  --r-md:   10px;    /* cards, sheets, dropdowns */
+  --r-lg:   16px;    /* onboarding recovery card, hero cards */
+  --r-full: 9999px;  /* circular avatars, dot indicators */
+
+  /* =====================================================================
+   * SHADOW — elevation scale
+   * ===================================================================== */
+
+  --shadow-1: 0 1px 2px rgba(28, 26, 21, 0.06);
+  --shadow-2: 0 2px 8px rgba(28, 26, 21, 0.08);
+  --shadow-3: 0 8px 24px rgba(28, 26, 21, 0.10),
+              0 2px 6px rgba(28, 26, 21, 0.06);
+  --shadow-4: 0 16px 48px rgba(28, 26, 21, 0.14);
+  --shadow-sheet: 0 -12px 40px rgba(28, 26, 21, 0.16),
+                  0 -2px 8px rgba(28, 26, 21, 0.06);
+
+  /* =====================================================================
+   * MOTION
+   * ===================================================================== */
+
+  --ease-calm:     cubic-bezier(0.2, 0, 0, 1);   /* the project's house curve */
+  --ease-overshoot: cubic-bezier(0.2, 0.8, 0.2, 1.1);
+  --ease-exit:      cubic-bezier(0.4, 0, 0.8, 0);
+
+  --dur-micro:  120ms;
+  --dur-short:  220ms;
+  --dur-base:   320ms;
+  --dur-long:   480ms;
+
+  /* =====================================================================
+   * Z-INDEX
+   * ===================================================================== */
+
+  --z-base:    0;
+  --z-header: 10;
+  --z-sheet:  50;
+  --z-modal:  60;
+  --z-toast:  70;
+}
+
+/* =========================================================================
+ * DARK MODE — overrides color tokens only; everything else is shared.
+ * Values from the "Design Token v0" dark palette in the design doc.
+ * ========================================================================= */
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:               #16140F;          /* warm ink, NOT #000 */
+    --surface:          #1F1C17;
+    --surface-2:        #2A2620;
+    --surface-hover:    #25211B;
+    --surface-active:   #2E2A23;
+    --border:           #34302A;
+    --border-subtle:    #2D2923;
+    --border-strong:    #4A4339;
+
+    --text:             #F4F0E6;
+    --text-muted:       #A39C8C;
+    --text-faint:       #6E685A;
+    --text-inverse:     #16140F;
+
+    --accent:           #D97E52;          /* lighter terracotta, higher L* */
+    --accent-hover:     #E8936A;
+    --accent-active:    #C96C42;
+    --accent-soft:      rgba(217, 126, 82, 0.10);
+    --accent-ring:      rgba(217, 126, 82, 0.30);
+
+    --amber-warn:       #D69647;
+    --red-error:        #D46060;
+    --red-error-soft:   rgba(212, 96, 96, 0.10);
+    --green-success:    #7CB895;
+    --green-success-soft: rgba(124, 184, 149, 0.18);
+
+    --overlay-scrim:    rgba(0, 0, 0, 0.35);
+
+    /* Shadows are weaker on dark surfaces — a big drop shadow on a
+     * dark ground reads as dirt, not depth. Pull alpha down to ~0.4
+     * and let ambient light from the accent do the heavy lifting. */
+    --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.40);
+    --shadow-2: 0 2px 8px rgba(0, 0, 0, 0.40);
+    --shadow-3: 0 8px 24px rgba(0, 0, 0, 0.40),
+                0 2px 6px rgba(0, 0, 0, 0.30);
+    --shadow-4: 0 16px 48px rgba(0, 0, 0, 0.50);
+    --shadow-sheet: 0 -12px 40px rgba(0, 0, 0, 0.50),
+                    0 -2px 8px rgba(0, 0, 0, 0.30);
+  }
+}
+
+/* =========================================================================
+ * REDUCE MOTION — respect the user's system preference.
+ *
+ * Strips every transition and view-transition down to effectively zero
+ * duration. A cross-fade still runs because sudden swaps look broken
+ * even in reduce-motion mode.
+ * ========================================================================= */
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-micro: 0ms;
+    --dur-short: 0ms;
+    --dur-base:  0ms;
+    --dur-long:  0ms;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

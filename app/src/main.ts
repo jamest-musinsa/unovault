@@ -4,7 +4,7 @@
 
 import { mount } from 'svelte';
 import App from './App.svelte';
-import './app.css';
+import './lib/styles/global.css';
 
 const target = document.getElementById('app');
 if (!target) {

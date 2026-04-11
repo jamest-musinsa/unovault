@@ -1,0 +1,108 @@
+/*
+ * typography.css — webfont loading + utility classes for body copy.
+ *
+ * Inter and JetBrains Mono come from Google Fonts for development.
+ * Before v1 ship, these get self-hosted in `public/fonts/` to avoid
+ * the first-paint flash and the external request (privacy). Both
+ * faces are MIT/OFL licensed and redistributable.
+ *
+ * Iowan Old Style is bundled with macOS — no web font needed.
+ */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+
+/* Headline: screen titles like "New item" or "GitHub" in the detail
+ * sheet header. */
+.t-headline {
+  font-family: var(--font-ui);
+  font-size: var(--fs-xl);
+  line-height: var(--lh-xl);
+  font-weight: var(--fw-semibold);
+  letter-spacing: -0.015em;
+  color: var(--text);
+  margin: 0;
+}
+
+/* Section heading: smaller than headline, used inside the detail
+ * sheet for groups of fields. */
+.t-section {
+  font-family: var(--font-ui);
+  font-size: var(--fs-lg);
+  line-height: var(--lh-lg);
+  font-weight: var(--fw-semibold);
+  letter-spacing: -0.005em;
+  color: var(--text);
+  margin: 0;
+}
+
+/* Body copy. */
+.t-body {
+  font-family: var(--font-ui);
+  font-size: var(--fs-md);
+  line-height: var(--lh-md);
+  font-weight: var(--fw-regular);
+  color: var(--text);
+}
+
+.t-body-muted {
+  font-family: var(--font-ui);
+  font-size: var(--fs-md);
+  line-height: var(--lh-md);
+  color: var(--text-muted);
+}
+
+/* Field label: the tiny uppercase letter-spaced label above form
+ * fields and in the item detail sheet. Matches the design spike. */
+.t-field-label {
+  font-family: var(--font-ui);
+  font-size: 10px;
+  line-height: 12px;
+  font-weight: var(--fw-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-faint);
+  user-select: none;
+}
+
+/* Metadata: item rows, timestamps, path strings. */
+.t-meta {
+  font-family: var(--font-ui);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-xs);
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.t-meta-muted {
+  font-family: var(--font-ui);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-xs);
+  color: var(--text-muted);
+}
+
+/* Monospace: vault filename, install ID, masked password placeholders. */
+.t-mono {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-sm);
+  letter-spacing: 0.02em;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Brand mark — Iowan Old Style italic, used in the locked home card.
+ * Accent-colored first letter is the single piece of "flair" in the
+ * whole product. Every other brand surface is straight typography. */
+.t-brand {
+  font-family: var(--font-serif);
+  font-size: var(--fs-lg);
+  line-height: 1;
+  font-weight: var(--fw-regular);
+  font-style: italic;
+  color: var(--text);
+  letter-spacing: -0.005em;
+  margin: 0;
+}
+.t-brand::first-letter {
+  color: var(--accent);
+}

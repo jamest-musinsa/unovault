@@ -1,12 +1,21 @@
 <script lang="ts">
-  // Minimal Add Item form. Fields: title, kind, username, url.
-  // Password is set on the next screen (item detail) via set_password.
-  // That split matches the backend API where CreateItem carries
-  // non-secret metadata only and secrets flow through UpdateField
-  // events afterwards.
+  // Add Item — rebuilt on primitives.
+  //
+  // Shows a compact form for the non-secret metadata: title, kind,
+  // username, url. The password is set on the following detail
+  // screen because the backend CreateItem carries metadata only.
 
   import { app } from '../lib/store.svelte';
-  import { addItem, listItems, toCommandError, type ItemKindTag } from '../lib/ipc';
+  import {
+    addItem,
+    listItems,
+    toCommandError,
+    type ItemKindTag,
+  } from '../lib/ipc';
+  import Button from '../lib/components/Button.svelte';
+  import Input from '../lib/components/Input.svelte';
+  import FieldLabel from '../lib/components/FieldLabel.svelte';
+  import ErrorBanner from '../lib/components/ErrorBanner.svelte';
 
   let title = $state('');
   let kind = $state<ItemKindTag>('Password');
@@ -23,13 +32,12 @@
         url.trim() || null,
       );
       // Refresh the full list from the backend so the sort order is
-      // consistent with everything else the vault shows.
+      // consistent across the UI.
       const items = await listItems();
       app.setItems(items);
       app.setView({ name: 'item-detail', itemId: created.id });
     } catch (raw) {
-      const err = toCommandError(raw);
-      app.setError(`${err.category}: ${err.message}`);
+      app.setError(toCommandError(raw));
     }
   }
 
@@ -38,23 +46,32 @@
   }
 </script>
 
-<section class="add-canvas">
-  <header class="header">
-    <button class="back-btn" onclick={cancel}>← Cancel</button>
+<section class="add-view">
+  <header class="topbar">
+    <Button variant="ghost" size="sm" onclick={cancel}>← Cancel</Button>
   </header>
 
-  <form class="form" onsubmit={(e) => { e.preventDefault(); submit(); }}>
-    <h2 class="form-title">New item</h2>
+  <form
+    class="form"
+    onsubmit={(e) => {
+      e.preventDefault();
+      submit();
+    }}
+  >
+    <h2 class="t-headline">New item</h2>
 
-    <label class="field">
-      <span class="field-label">TITLE</span>
-      <!-- svelte-ignore a11y_autofocus -->
-      <input type="text" class="input" bind:value={title} placeholder="GitHub" autofocus />
-    </label>
+    {#if app.error}
+      <ErrorBanner error={app.error} onDismiss={() => app.clearError()} />
+    {/if}
 
-    <label class="field">
-      <span class="field-label">KIND</span>
-      <select class="select" bind:value={kind}>
+    <div class="field">
+      <FieldLabel for="ni-title">Title</FieldLabel>
+      <Input id="ni-title" bind:value={title} placeholder="GitHub" autofocus />
+    </div>
+
+    <div class="field">
+      <FieldLabel for="ni-kind">Kind</FieldLabel>
+      <select id="ni-kind" class="select" bind:value={kind}>
         <option value="Password">Password</option>
         <option value="Passkey">Passkey</option>
         <option value="Totp">TOTP</option>
@@ -62,66 +79,52 @@
         <option value="ApiToken">API Token</option>
         <option value="SecureNote">Secure Note</option>
       </select>
-    </label>
-
-    <label class="field">
-      <span class="field-label">USERNAME</span>
-      <input type="text" class="input" bind:value={username} placeholder="james@personal" />
-    </label>
-
-    <label class="field">
-      <span class="field-label">URL</span>
-      <input type="text" class="input" bind:value={url} placeholder="github.com" />
-    </label>
-
-    <div class="actions">
-      <button type="submit" class="btn-primary">Create</button>
-      <button type="button" class="btn-secondary" onclick={cancel}>Cancel</button>
     </div>
 
-    {#if app.error}
-      <div class="error-banner">{app.error}</div>
-    {/if}
+    <div class="field">
+      <FieldLabel for="ni-user">Username</FieldLabel>
+      <Input id="ni-user" bind:value={username} placeholder="james@personal" />
+    </div>
+
+    <div class="field">
+      <FieldLabel for="ni-url">URL</FieldLabel>
+      <Input id="ni-url" bind:value={url} placeholder="github.com" />
+    </div>
+
+    <div class="actions">
+      <Button type="submit" variant="primary" size="md">Create</Button>
+      <Button type="button" variant="secondary" size="md" onclick={cancel}>
+        Cancel
+      </Button>
+    </div>
   </form>
 </section>
 
 <style>
-  .add-canvas {
+  .add-view {
     flex: 1;
     display: flex;
     flex-direction: column;
     min-height: 0;
+    view-transition-name: add-view;
   }
 
-  .header {
+  .topbar {
     padding: var(--s-4) var(--s-6);
     border-bottom: 1px solid var(--border-subtle);
+    flex-shrink: 0;
   }
-  .back-btn {
-    color: var(--text-muted);
-    font-size: var(--fs-sm);
-    padding: var(--s-1) var(--s-3);
-    border-radius: var(--r-sm);
-  }
-  .back-btn:hover { background: var(--surface-2); }
 
   .form {
     flex: 1;
     padding: var(--s-6) var(--s-8);
-    overflow-y: auto;
-    display: flex;
-    flex-direction: column;
-    gap: var(--s-4);
     max-width: 520px;
     margin: 0 auto;
     width: 100%;
-  }
-
-  .form-title {
-    font-size: var(--fs-xl);
-    font-weight: 600;
-    margin: 0 0 var(--s-2) 0;
-    letter-spacing: -0.015em;
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-4);
+    overflow-y: auto;
   }
 
   .field {
@@ -129,21 +132,17 @@
     flex-direction: column;
     gap: var(--s-2);
   }
-  .field-label {
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    font-weight: 600;
-    color: var(--text-faint);
-  }
+
   .select {
     height: 40px;
     padding: 0 var(--s-4);
     background: var(--surface-2);
     border: 1px solid var(--border);
     border-radius: var(--r-sm);
+    font-family: var(--font-ui);
     font-size: var(--fs-md);
     color: var(--text);
+    cursor: pointer;
   }
 
   .actions {

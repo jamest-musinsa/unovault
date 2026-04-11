@@ -1,12 +1,19 @@
 <script lang="ts">
-  // Vault list screen — matches design/spike/vault-list.html.
+  // Vault list — rebuilt on primitives (CommandBar, ListRow,
+  // EmptyState, KindChip, Button, ErrorBanner).
   //
-  // Command bar + single panel layout. Search is client-side over
-  // the in-memory items cache; the list of item IDs never crosses
-  // the IPC boundary (we only fetched metadata).
+  // Layout: command bar at the top, header strip with item count +
+  // actions, then scrollable list or empty state. No inline styles
+  // for any of the row chrome; it all lives in ListRow.svelte.
 
   import { app } from '../lib/store.svelte';
   import { lockVault, toCommandError } from '../lib/ipc';
+  import CommandBar from '../lib/components/CommandBar.svelte';
+  import ListRow from '../lib/components/ListRow.svelte';
+  import EmptyState from '../lib/components/EmptyState.svelte';
+  import KindChip from '../lib/components/KindChip.svelte';
+  import Button from '../lib/components/Button.svelte';
+  import ErrorBanner from '../lib/components/ErrorBanner.svelte';
 
   let query = $state('');
 
@@ -28,8 +35,7 @@
       await lockVault();
       app.onLock();
     } catch (raw) {
-      const err = toCommandError(raw);
-      app.setError(`${err.category}: ${err.message}`);
+      app.setError(toCommandError(raw));
     }
   }
 
@@ -40,118 +46,100 @@
   function addNew() {
     app.setView({ name: 'add-item' });
   }
+
+  function metaFor(username: string | null, url: string | null): string {
+    const parts = [username, url].filter((x): x is string => !!x);
+    return parts.join(' · ');
+  }
 </script>
 
-<section class="vault-list">
-  <div class="command-bar">
-    <!-- svelte-ignore a11y_autofocus -->
-    <input
-      type="text"
-      class="cmd-input"
-      placeholder="Search or type a command"
-      bind:value={query}
-      autofocus
-    />
-    <span class="kbd">⌘K</span>
+<section class="vault-list-view">
+  <div class="command-bar-wrap">
+    <CommandBar bind:value={query} />
   </div>
 
-  <div class="list-header">
-    <span class="count">{filtered.length} items</span>
+  <header class="list-header">
+    <span class="count t-meta">{filtered.length} items</span>
     <div class="header-actions">
-      <button class="btn-secondary btn-small" onclick={addNew}>Add item</button>
-      <button class="btn-secondary btn-small" onclick={onLock}>Lock</button>
+      <Button variant="secondary" size="sm" onclick={addNew}>Add item</Button>
+      <Button variant="ghost" size="sm" onclick={onLock}>Lock</Button>
     </div>
-  </div>
+  </header>
+
+  {#if app.error}
+    <div class="error-wrap">
+      <ErrorBanner error={app.error} onDismiss={() => app.clearError()} />
+    </div>
+  {/if}
 
   {#if filtered.length === 0 && app.items.length === 0}
-    <div class="empty-state">
-      <p>Your vault is empty.</p>
-      <button class="btn-primary" onclick={addNew}>Add your first item</button>
-    </div>
+    <EmptyState
+      headline="Your vault is empty."
+      hint="Add your first credential, or import one from 1Password or Bitwarden."
+    >
+      {#snippet action()}
+        <Button variant="primary" size="md" onclick={addNew}>
+          Add your first item
+        </Button>
+      {/snippet}
+    </EmptyState>
   {:else if filtered.length === 0}
-    <div class="empty-state">
-      <p>No matches for &quot;{query}&quot;.</p>
-    </div>
+    <EmptyState headline={`No matches for "${query}"`} />
   {:else}
     <ul class="items">
       {#each filtered as item (item.id)}
         <li>
-          <button class="item-row" onclick={() => openItem(item.id)}>
-            <span class="item-icon">{item.title.charAt(0).toUpperCase()}</span>
-            <span class="item-content">
-              <span class="item-title">{item.title}</span>
-              <span class="item-meta">
-                {item.username ?? ''}{#if item.username && item.url} · {/if}{item.url ?? ''}
-              </span>
-            </span>
-            <span class="item-kind" class:passkey={item.kind === 'Passkey'}>{item.kind}</span>
-          </button>
+          <ListRow
+            initial={item.title.charAt(0)}
+            title={item.title}
+            meta={metaFor(item.username, item.url)}
+            onclick={() => openItem(item.id)}
+          >
+            {#snippet trailing()}
+              <KindChip kind={item.kind} />
+            {/snippet}
+          </ListRow>
         </li>
       {/each}
     </ul>
   {/if}
-
-  {#if app.error}
-    <div class="error-banner">{app.error}</div>
-  {/if}
 </section>
 
 <style>
-  .vault-list {
+  .vault-list-view {
     flex: 1;
     display: flex;
     flex-direction: column;
     min-height: 0;
+    view-transition-name: vault-list;
   }
 
-  .command-bar {
-    display: flex;
-    align-items: center;
-    gap: var(--s-3);
-    margin: var(--s-4) var(--s-6);
-    height: 48px;
-    padding: 0 var(--s-4);
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--r-md);
-    box-shadow: var(--shadow-1);
-  }
-  .cmd-input {
-    flex: 1;
-    font-size: var(--fs-lg);
-  }
-  .cmd-input::placeholder { color: var(--text-faint); }
-  .kbd {
-    font-family: var(--font-mono);
-    font-size: var(--fs-xs);
-    color: var(--text-faint);
-    padding: 3px 8px;
-    border: 1px solid var(--border);
-    border-radius: var(--r-sm);
-    background: var(--surface-2);
+  .command-bar-wrap {
+    padding: var(--s-4) var(--s-6) var(--s-3) var(--s-6);
+    flex-shrink: 0;
   }
 
   .list-header {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     justify-content: space-between;
     padding: var(--s-2) var(--s-6);
+    flex-shrink: 0;
   }
+
   .count {
-    font-size: var(--fs-xs);
-    color: var(--text-faint);
     text-transform: uppercase;
     letter-spacing: 0.04em;
-    font-weight: 500;
+    font-weight: var(--fw-medium);
   }
+
   .header-actions {
     display: flex;
     gap: var(--s-2);
   }
-  .btn-small {
-    height: 28px;
-    padding: 0 var(--s-3);
-    font-size: var(--fs-xs);
+
+  .error-wrap {
+    padding: 0 var(--s-6);
   }
 
   .items {
@@ -162,82 +150,7 @@
     overflow-y: auto;
   }
 
-  .item-row {
-    width: 100%;
-    display: flex;
-    align-items: center;
-    gap: var(--s-4);
-    height: 56px;
-    padding: 0 var(--s-4);
-    border-bottom: 1px solid var(--border-subtle);
-    text-align: left;
-    background: transparent;
-    transition: background var(--dur-micro) var(--ease-calm);
-  }
-  .item-row:hover { background: var(--surface-hover); }
-
-  .item-icon {
-    width: 32px; height: 32px;
-    border-radius: var(--r-sm);
-    background: var(--surface-2);
-    border: 1px solid var(--border);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-weight: 600;
-    color: var(--text-muted);
-    font-size: var(--fs-sm);
-  }
-
-  .item-content {
-    flex: 1;
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-  .item-title {
-    font-size: var(--fs-md);
-    font-weight: 500;
-    color: var(--text);
-    line-height: 20px;
-  }
-  .item-meta {
-    font-size: var(--fs-xs);
-    color: var(--text-faint);
-    line-height: 14px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .item-kind {
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    font-weight: 600;
-    color: var(--text-faint);
-    padding: 2px 8px;
-    border: 1px solid var(--border);
-    border-radius: 999px;
-  }
-  .item-kind.passkey {
-    color: var(--accent);
-    border-color: rgba(184, 83, 44, 0.28);
-    background: var(--accent-soft);
-  }
-
-  .empty-state {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: var(--s-4);
-    color: var(--text-muted);
-  }
-
-  .error-banner {
-    margin: var(--s-3) var(--s-6);
+  .items li {
+    margin: 0;
   }
 </style>

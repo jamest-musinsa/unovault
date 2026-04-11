@@ -1,10 +1,14 @@
 <script lang="ts">
-  // Locked Vault Home screen — matches the design spike at
-  // design/spike/locked-home.html. Intentionally less polished in
-  // this v0; the full design system lands in weeks 10-13.
+  // Locked Vault Home — rebuilt on top of primitives. Matches the
+  // structure of design/spike/locked-home.html but uses Card +
+  // Input + Button + FieldLabel instead of inline CSS.
 
   import { createVault, unlockVault, toCommandError } from '../lib/ipc';
   import { app } from '../lib/store.svelte';
+  import Card from '../lib/components/Card.svelte';
+  import Button from '../lib/components/Button.svelte';
+  import Input from '../lib/components/Input.svelte';
+  import ErrorBanner from '../lib/components/ErrorBanner.svelte';
 
   let password = $state('');
   let bundlePath = $state('');
@@ -18,8 +22,7 @@
       password = ''; // drop the plaintext from JS as soon as possible
       app.onUnlock(items, bundlePath);
     } catch (raw) {
-      const err = toCommandError(raw);
-      app.setError(`${err.category}: ${err.message}`);
+      app.setError(toCommandError(raw));
     } finally {
       app.setBusy(false);
     }
@@ -34,8 +37,7 @@
       password = '';
       app.onUnlock(items, bundlePath);
     } catch (raw) {
-      const err = toCommandError(raw);
-      app.setError(`${err.category}: ${err.message}`);
+      app.setError(toCommandError(raw));
     } finally {
       app.setBusy(false);
     }
@@ -43,52 +45,66 @@
 </script>
 
 <section class="locked-canvas">
-  <div class="vault-card">
-    <h1 class="brand">unovault</h1>
-    <p class="vault-filename">{bundlePath || 'default.unovault'}</p>
+  <Card width={380} padding="md">
+    <header class="brand-header">
+      <h1 class="t-brand">unovault</h1>
+      <p class="filename t-mono">{bundlePath || 'default.unovault'}</p>
+    </header>
 
-    <form class="stack" onsubmit={(e) => { e.preventDefault(); unlock(); }}>
+    <form
+      class="stack"
+      onsubmit={(e) => {
+        e.preventDefault();
+        unlock();
+      }}
+    >
       <label for="bundle-path" class="sr-only">Vault path</label>
-      <input
+      <Input
         id="bundle-path"
-        type="text"
-        class="input"
-        placeholder="/path/to/default.unovault"
         bind:value={bundlePath}
+        placeholder="/path/to/default.unovault"
         autocomplete="off"
       />
 
       <label for="master" class="sr-only">Master password</label>
-      <!-- svelte-ignore a11y_autofocus -->
-      <input
+      <Input
         id="master"
-        type="password"
-        class="input"
-        placeholder="Master password"
         bind:value={password}
+        type="password"
+        placeholder="Master password"
         autocomplete="current-password"
         autofocus
       />
 
       <div class="actions">
-        <button type="submit" class="btn-primary" disabled={app.busy}>
-          {#if app.busy}Unlocking…{:else}Unlock{/if}
-        </button>
-        <button
-          type="button"
-          class="btn-secondary"
-          onclick={create}
+        <Button
+          type="submit"
+          variant="primary"
+          size="md"
+          fullWidth
           disabled={app.busy}
         >
+          {#if app.busy}Unlocking…{:else}Unlock{/if}
+        </Button>
+        <Button
+          type="button"
+          variant="secondary"
+          size="md"
+          fullWidth
+          disabled={app.busy}
+          onclick={create}
+        >
           Create new
-        </button>
+        </Button>
       </div>
     </form>
 
     {#if app.error}
-      <div class="error-banner">{app.error}</div>
+      <div class="error-wrap">
+        <ErrorBanner error={app.error} onDismiss={() => app.clearError()} />
+      </div>
     {/if}
-  </div>
+  </Card>
 </section>
 
 <style>
@@ -98,38 +114,27 @@
     align-items: center;
     justify-content: center;
     padding: var(--s-8);
+    /* Subtle warm vignette — keeps the card from floating on flat paper. */
+    background-image: radial-gradient(
+      ellipse at center top,
+      rgba(255, 255, 255, 0.5) 0%,
+      rgba(255, 255, 255, 0) 60%
+    );
+    view-transition-name: locked-canvas;
   }
 
-  .vault-card {
-    width: 380px;
-    padding: var(--s-8) var(--s-8) var(--s-6) var(--s-8);
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--r-md);
-    box-shadow: var(--shadow-3);
+  .brand-header {
+    text-align: center;
+    margin-bottom: var(--s-6);
     display: flex;
     flex-direction: column;
-    gap: var(--s-4);
+    gap: var(--s-2);
   }
 
-  .brand {
-    font-family: var(--font-serif);
-    font-size: var(--fs-lg);
-    font-weight: 400;
-    font-style: italic;
-    color: var(--text);
-    margin: 0;
-    text-align: center;
-    letter-spacing: -0.005em;
-  }
-  .brand::first-letter { color: var(--accent); }
-
-  .vault-filename {
-    font-family: var(--font-mono);
-    font-size: var(--fs-xs);
+  .filename {
     color: var(--text-faint);
-    margin: 0 0 var(--s-4) 0;
-    text-align: center;
+    font-size: var(--fs-xs);
+    margin: 0;
   }
 
   .stack {
@@ -143,5 +148,12 @@
     gap: var(--s-2);
     margin-top: var(--s-2);
   }
-  .actions > * { flex: 1; }
+
+  .error-wrap {
+    margin-top: var(--s-4);
+  }
+
+  :global(.t-brand) {
+    text-align: center;
+  }
 </style>

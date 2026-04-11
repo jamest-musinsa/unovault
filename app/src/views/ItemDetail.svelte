@@ -1,10 +1,11 @@
 <script lang="ts">
-  // Item Detail sheet — matches design/spike/item-detail.html.
+  // Item Detail — rebuilt on top of Sheet + FieldLabel + Button.
   //
-  // Metadata-only by construction: the frontend never sees the
-  // password bytes. The "Copy password" button calls the backend
-  // copy_password_to_clipboard command, which does the work on
-  // the Rust side without ever sending the plaintext through IPC.
+  // The detail sheet slides up over the vault list via the CSS View
+  // Transitions API; the Sheet primitive declares the transition
+  // name, and the store's setView wraps view changes in
+  // document.startViewTransition(), so no extra wiring is needed
+  // here beyond picking the right Sheet props.
 
   import { app } from '../lib/store.svelte';
   import {
@@ -13,6 +14,12 @@
     toCommandError,
     type ItemMetadata,
   } from '../lib/ipc';
+  import Sheet from '../lib/components/Sheet.svelte';
+  import Button from '../lib/components/Button.svelte';
+  import Input from '../lib/components/Input.svelte';
+  import FieldLabel from '../lib/components/FieldLabel.svelte';
+  import KindChip from '../lib/components/KindChip.svelte';
+  import ErrorBanner from '../lib/components/ErrorBanner.svelte';
 
   interface Props {
     itemId: string;
@@ -29,11 +36,10 @@
   async function onCopy() {
     try {
       await copyPasswordToClipboard(itemId);
-      copiedNotice = 'Copied. Clipboard will clear in 30s.';
+      copiedNotice = 'Copied. Clipboard clears in 30 seconds.';
       setTimeout(() => (copiedNotice = null), 3000);
     } catch (raw) {
-      const err = toCommandError(raw);
-      app.setError(`${err.category}: ${err.message}`);
+      app.setError(toCommandError(raw));
     }
   }
 
@@ -42,178 +48,173 @@
     try {
       const updated = await setPassword(itemId, newPassword);
       newPassword = '';
-      // Replace the item in the store with the updated metadata.
       app.setItems(app.items.map((m) => (m.id === updated.id ? updated : m)));
     } catch (raw) {
-      const err = toCommandError(raw);
-      app.setError(`${err.category}: ${err.message}`);
+      app.setError(toCommandError(raw));
     }
   }
 
-  function back() {
+  function close() {
     app.setView({ name: 'vault-list' });
+  }
+
+  function formatTimestamp(ms: number): string {
+    return new Date(ms).toLocaleString(undefined, {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    });
   }
 </script>
 
-<section class="detail-canvas">
-  <header class="header">
-    <button class="back-btn" onclick={back}>← Back</button>
-  </header>
-
-  {#if !item}
-    <p class="missing">Item not found.</p>
-  {:else}
-    <div class="sheet">
-      <h2 class="sheet-title">{item.title}</h2>
-      {#if item.url}
-        <a class="sheet-url" href={item.url.startsWith('http') ? item.url : `https://${item.url}`} target="_blank" rel="noreferrer">
-          {item.url} ↗
-        </a>
-      {/if}
-
-      <div class="field">
-        <div class="field-label">USERNAME</div>
-        <div class="field-value">{item.username ?? '—'}</div>
-      </div>
-
-      <div class="field">
-        <div class="field-label">PASSWORD</div>
-        {#if item.has_password}
-          <div class="field-row">
-            <span class="field-value mono">••••••••••••••••</span>
-            <button class="btn-secondary btn-small" onclick={onCopy}>Copy</button>
-          </div>
-          {#if copiedNotice}
-            <div class="copied-notice">{copiedNotice}</div>
-          {/if}
-        {:else}
-          <form class="set-password" onsubmit={(e) => { e.preventDefault(); onSetPassword(); }}>
-            <input
-              type="password"
-              class="input"
-              placeholder="Set a password"
-              bind:value={newPassword}
-            />
-            <button class="btn-primary" type="submit">Set</button>
-          </form>
+{#if item}
+  <Sheet title={item.title} onClose={close}>
+    <header class="sheet-header">
+      <div class="header-main">
+        <h2 class="t-headline">{item.title}</h2>
+        {#if item.url}
+          <a
+            class="url-link t-meta-muted"
+            href={item.url.startsWith('http') ? item.url : `https://${item.url}`}
+            target="_blank"
+            rel="noreferrer"
+          >
+            {item.url} ↗
+          </a>
         {/if}
       </div>
+      <KindChip kind={item.kind} />
+    </header>
 
-      <div class="field">
-        <div class="field-label">KIND</div>
-        <div class="field-value">{item.kind}</div>
+    {#if app.error}
+      <div class="error-wrap">
+        <ErrorBanner error={app.error} onDismiss={() => app.clearError()} />
       </div>
+    {/if}
 
-      <div class="field metadata">
-        <div class="field-label">METADATA</div>
-        <div class="field-value metadata-grid">
-          <span>Created</span><span>{new Date(item.created_at_ms).toLocaleString()}</span>
-          <span>Modified</span><span>{new Date(item.modified_at_ms).toLocaleString()}</span>
+    <section class="field">
+      <FieldLabel>Username</FieldLabel>
+      <div class="field-value t-body">{item.username ?? '—'}</div>
+    </section>
+
+    <section class="field">
+      <FieldLabel>Password</FieldLabel>
+      {#if item.has_password}
+        <div class="field-row">
+          <span class="field-value t-mono">••••••••••••••••</span>
+          <Button variant="secondary" size="sm" onclick={onCopy}>Copy</Button>
         </div>
+        {#if copiedNotice}
+          <p class="copied t-meta">{copiedNotice}</p>
+        {/if}
+      {:else}
+        <form
+          class="set-password"
+          onsubmit={(e) => {
+            e.preventDefault();
+            onSetPassword();
+          }}
+        >
+          <Input
+            bind:value={newPassword}
+            type="password"
+            placeholder="Set a password"
+          />
+          <Button type="submit" variant="primary" size="md">Set</Button>
+        </form>
+      {/if}
+    </section>
+
+    <section class="field metadata">
+      <FieldLabel>Metadata</FieldLabel>
+      <div class="metadata-grid">
+        <span class="t-meta">Created</span>
+        <span class="t-meta-muted">{formatTimestamp(item.created_at_ms)}</span>
+        <span class="t-meta">Modified</span>
+        <span class="t-meta-muted">{formatTimestamp(item.modified_at_ms)}</span>
       </div>
-    </div>
-  {/if}
-</section>
+    </section>
+
+    {#snippet footer()}
+      <Button variant="ghost" size="sm" onclick={close}>Back</Button>
+    {/snippet}
+  </Sheet>
+{:else}
+  <Sheet title="Item not found" onClose={close}>
+    <p class="t-body-muted">This item does not exist. It may have been deleted.</p>
+    {#snippet footer()}
+      <Button variant="secondary" size="sm" onclick={close}>Back to list</Button>
+    {/snippet}
+  </Sheet>
+{/if}
 
 <style>
-  .detail-canvas {
+  .sheet-header {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--s-4);
+    margin-bottom: var(--s-6);
+  }
+
+  .header-main {
     flex: 1;
+    min-width: 0;
     display: flex;
     flex-direction: column;
-    min-height: 0;
+    gap: var(--s-1);
   }
 
-  .header {
-    padding: var(--s-4) var(--s-6);
-    border-bottom: 1px solid var(--border-subtle);
+  .url-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    width: fit-content;
   }
-  .back-btn {
-    color: var(--text-muted);
-    font-size: var(--fs-sm);
-    padding: var(--s-1) var(--s-3);
-    border-radius: var(--r-sm);
+  .url-link:hover {
+    color: var(--accent);
   }
-  .back-btn:hover { background: var(--surface-2); }
-
-  .sheet {
-    flex: 1;
-    padding: var(--s-6) var(--s-8);
-    overflow-y: auto;
-    display: flex;
-    flex-direction: column;
-    gap: var(--s-5);
-  }
-
-  .sheet-title {
-    font-size: var(--fs-xl);
-    font-weight: 600;
-    margin: 0;
-    letter-spacing: -0.015em;
-  }
-  .sheet-url {
-    font-size: var(--fs-sm);
-    color: var(--text-muted);
-  }
-  .sheet-url:hover { color: var(--accent); }
 
   .field {
-    padding: var(--s-3) 0;
+    padding: var(--s-4) 0;
     border-bottom: 1px solid var(--border-subtle);
   }
-  .field-label {
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    font-weight: 600;
-    color: var(--text-faint);
-    margin-bottom: var(--s-2);
+  .field:last-of-type {
+    border-bottom: none;
   }
-  .field-value {
-    font-size: var(--fs-md);
-    font-weight: 500;
-  }
-  .field-value.mono {
-    font-family: var(--font-mono);
-    letter-spacing: 0.04em;
-  }
+
   .field-row {
     display: flex;
     align-items: center;
     gap: var(--s-3);
   }
-  .field-row > .field-value { flex: 1; }
-
-  .btn-small {
-    height: 28px;
-    padding: 0 var(--s-3);
-    font-size: var(--fs-xs);
+  .field-row > .field-value {
+    flex: 1;
   }
 
-  .copied-notice {
-    margin-top: var(--s-2);
-    font-size: var(--fs-xs);
-    color: var(--green-success);
+  .field-value {
+    font-weight: var(--fw-medium);
+    color: var(--text);
   }
 
   .set-password {
     display: flex;
     gap: var(--s-2);
   }
-  .set-password > .input { flex: 1; }
+  .set-password > :global(input) {
+    flex: 1;
+  }
+
+  .copied {
+    margin: var(--s-2) 0 0 0;
+    color: var(--green-success);
+  }
 
   .metadata-grid {
     display: grid;
     grid-template-columns: auto 1fr;
     gap: var(--s-2) var(--s-4);
-    font-size: var(--fs-xs);
-    color: var(--text-muted);
-    font-weight: 400;
-    font-variant-numeric: tabular-nums;
   }
 
-  .missing {
-    padding: var(--s-8);
-    text-align: center;
-    color: var(--text-muted);
+  .error-wrap {
+    margin-bottom: var(--s-4);
   }
 </style>

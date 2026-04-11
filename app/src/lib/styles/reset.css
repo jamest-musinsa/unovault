@@ -1,0 +1,136 @@
+/*
+ * reset.css — minimal, opinionated baseline.
+ *
+ * Not a full reset like Meyer or normalize.css. Just the handful of
+ * tweaks that a modern Svelte app needs so the tokens in tokens.css
+ * actually take effect and form elements stop fighting us.
+ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+html {
+  /* WebKit font rendering — the unovault Mac app is always rendered
+   * via WKWebView, so these smoothing hints apply to every user. */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  /* Tab stops on 4 spaces for any inline code blocks in the UI. */
+  tab-size: 4;
+}
+
+body {
+  font-family: var(--font-ui);
+  font-size: var(--fs-md);
+  line-height: var(--lh-md);
+  color: var(--text);
+  background: var(--bg);
+  /* Stop the browser from inserting synthetic styles when a font
+   * weight is unavailable. Inter ships every weight we use (400/500/600),
+   * so fake bolding would only add paint artifacts. */
+  font-synthesis: none;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+}
+
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+  border: none;
+  outline: none;
+  background: none;
+}
+
+textarea {
+  resize: vertical;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+a:hover {
+  color: var(--accent);
+}
+
+/* Images are block-level by default — no phantom inline baseline. */
+img,
+svg,
+video {
+  display: block;
+  max-width: 100%;
+}
+
+/* Visually-hidden but accessible (WCAG 2.2 compatible). */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Scrollbars: WebKit-only, intentionally thin + muted so they don't
+ * steal attention from the content. */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: rgba(28, 26, 21, 0.08);
+  border-radius: 6px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(28, 26, 21, 0.18);
+  background-clip: padding-box;
+  border: 3px solid transparent;
+}
+@media (prefers-color-scheme: dark) {
+  *::-webkit-scrollbar-thumb {
+    background: rgba(244, 240, 230, 0.12);
+    background-clip: padding-box;
+    border: 3px solid transparent;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background: rgba(244, 240, 230, 0.22);
+    background-clip: padding-box;
+    border: 3px solid transparent;
+  }
+}
