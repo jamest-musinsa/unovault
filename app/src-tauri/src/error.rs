@@ -68,6 +68,23 @@ impl From<std::io::Error> for CommandError {
     }
 }
 
+impl From<unovault_import::ImportError> for CommandError {
+    fn from(err: unovault_import::ImportError) -> Self {
+        use unovault_import::ImportError as E;
+        let message = IpcString::new(err.to_string());
+        match err {
+            // All importer failures are user-facing: the user picked a
+            // wrong file, a malformed export, or an encrypted archive —
+            // nothing the backend can retry on its own.
+            E::FileOpen(_)
+            | E::Malformed { .. }
+            | E::UnknownFormat
+            | E::EncryptedSource
+            | E::OnePasswordEmpty => Self::UserActionable(message),
+        }
+    }
+}
+
 /// Shorthand for command return types. Every Tauri command returns
 /// `CommandResult<T>` so the boundary shape is uniform.
 pub type CommandResult<T> = Result<T, CommandError>;

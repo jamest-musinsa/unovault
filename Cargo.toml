@@ -4,6 +4,7 @@ members = [
     "app/src-tauri",
     "crates/unovault-core",
     "crates/unovault-ffi",
+    "crates/unovault-import",
     "crates/unovault-macros",
     "crates/uniffi-bindgen",
 ]
@@ -68,6 +69,10 @@ uniffi = { version = "0.28", features = ["cli"] }
 # Tauri v2 app shell
 tauri = { version = "2", features = [] }
 tauri-build = { version = "2", features = [] }
+
+# Importer: 1Password 1pux is a ZIP archive, KeePass is XML
+zip = { version = "2", default-features = false, features = ["deflate"] }
+quick-xml = { version = "0.37", features = ["serialize"] }
 
 # Testing
 proptest = "1.5"

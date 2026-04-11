@@ -8,6 +8,7 @@
   import VaultList from './views/VaultList.svelte';
   import ItemDetail from './views/ItemDetail.svelte';
   import AddItem from './views/AddItem.svelte';
+  import ImportWizard from './views/ImportWizard.svelte';
   import StatusBar from './views/StatusBar.svelte';
   import { app } from './lib/store.svelte';
   import { registerShortcuts } from './lib/keyboard.svelte';
@@ -30,7 +31,8 @@
           const current = app.view;
           if (
             current.name === 'item-detail' ||
-            current.name === 'add-item'
+            current.name === 'add-item' ||
+            current.name === 'import'
           ) {
             app.setView({ name: 'vault-list' });
           }
@@ -56,6 +58,8 @@
     <ItemDetail itemId={app.view.itemId} />
   {:else if app.view.name === 'add-item'}
     <AddItem />
+  {:else if app.view.name === 'import'}
+    <ImportWizard />
   {/if}
 
   <StatusBar />

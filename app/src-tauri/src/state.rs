@@ -15,14 +15,23 @@
 //! render pass.
 
 use std::path::PathBuf;
-use std::sync::RwLock;
+use std::sync::{Mutex, RwLock};
 use unovault_core::vault::Vault;
+use unovault_import::ParsedItem;
 
 /// The one thing every Tauri command reaches for: a shared handle to
 /// the current vault plus the paths the backend needs to persist
 /// auxiliary state.
+///
+/// [`AppState::pending_import`] holds the parsed items from the most
+/// recent `preview_import` call. Keeping them here means the plaintext
+/// secrets never cross the IPC boundary — the frontend gets counts and
+/// titles in the preview response, and `commit_import` consumes the
+/// stashed items by value so a committed or cancelled import zeroizes
+/// through [`ParsedItem::Drop`].
 pub struct AppState {
     pub vault: RwLock<Option<Vault>>,
+    pub pending_import: Mutex<Option<Vec<ParsedItem>>>,
     pub install_id_dir: PathBuf,
 }
 
@@ -34,6 +43,7 @@ impl AppState {
         let install_id_dir = default_install_id_dir();
         Self {
             vault: RwLock::new(None),
+            pending_import: Mutex::new(None),
             install_id_dir,
         }
     }
@@ -44,6 +54,7 @@ impl AppState {
     pub fn with_install_id_dir(install_id_dir: PathBuf) -> Self {
         Self {
             vault: RwLock::new(None),
+            pending_import: Mutex::new(None),
             install_id_dir,
         }
     }

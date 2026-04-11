@@ -18,7 +18,8 @@ export type View =
   | { name: 'locked' }
   | { name: 'vault-list' }
   | { name: 'item-detail'; itemId: string }
-  | { name: 'add-item' };
+  | { name: 'add-item' }
+  | { name: 'import' };
 
 // View Transitions API is native on Safari 18+ (macOS 15) and
 // Chromium 111+. TypeScript's lib.dom has the type already. When

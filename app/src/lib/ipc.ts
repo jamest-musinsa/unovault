@@ -126,3 +126,60 @@ export async function copyPasswordToClipboard(itemId: string): Promise<void> {
 export async function formatVersion(): Promise<number> {
   return invoke('format_version');
 }
+
+// =============================================================================
+// IMPORT WIZARD — mirror unovault_app::commands::ImportPreview et al.
+// =============================================================================
+
+export interface ImportPreviewItem {
+  title: string;
+  kind: ItemKindTag;
+  has_password: boolean;
+  has_totp: boolean;
+  has_notes: boolean;
+}
+
+export interface ImportPreviewSkipped {
+  title: string;
+  reason: string;
+}
+
+export interface ImportPreview {
+  source: string;
+  imported_count: number;
+  skipped_count: number;
+  preview_items: ImportPreviewItem[];
+  skipped_items: ImportPreviewSkipped[];
+  summary_line: string;
+}
+
+export interface ImportCommitResult {
+  committed_count: number;
+  failed_count: number;
+}
+
+// Tag accepted by `preview_import_with_source` on the Rust side.
+// The wizard's source dropdown hands one of these strings through.
+export type ImportSourceTag =
+  | 'OnePassword1pux'
+  | 'BitwardenJson'
+  | 'KeepassXml';
+
+export async function previewImport(bundlePath: string): Promise<ImportPreview> {
+  return invoke('preview_import', { bundlePath });
+}
+
+export async function previewImportWithSource(
+  bundlePath: string,
+  source: ImportSourceTag,
+): Promise<ImportPreview> {
+  return invoke('preview_import_with_source', { bundlePath, source });
+}
+
+export async function commitImport(): Promise<ImportCommitResult> {
+  return invoke('commit_import');
+}
+
+export async function cancelImport(): Promise<void> {
+  return invoke('cancel_import');
+}

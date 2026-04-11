@@ -47,6 +47,10 @@
     app.setView({ name: 'add-item' });
   }
 
+  function openImport() {
+    app.setView({ name: 'import' });
+  }
+
   function metaFor(username: string | null, url: string | null): string {
     const parts = [username, url].filter((x): x is string => !!x);
     return parts.join(' · ');
@@ -62,6 +66,7 @@
     <span class="count t-meta">{filtered.length} items</span>
     <div class="header-actions">
       <Button variant="secondary" size="sm" onclick={addNew}>Add item</Button>
+      <Button variant="ghost" size="sm" onclick={openImport}>Import</Button>
       <Button variant="ghost" size="sm" onclick={onLock}>Lock</Button>
     </div>
   </header>
@@ -75,12 +80,17 @@
   {#if filtered.length === 0 && app.items.length === 0}
     <EmptyState
       headline="Your vault is empty."
-      hint="Add your first credential, or import one from 1Password or Bitwarden."
+      hint="Add your first credential, or import one from 1Password, Bitwarden, or KeePass."
     >
       {#snippet action()}
-        <Button variant="primary" size="md" onclick={addNew}>
-          Add your first item
-        </Button>
+        <div class="empty-actions">
+          <Button variant="primary" size="md" onclick={addNew}>
+            Add your first item
+          </Button>
+          <Button variant="secondary" size="md" onclick={openImport}>
+            Import from another vault
+          </Button>
+        </div>
       {/snippet}
     </EmptyState>
   {:else if filtered.length === 0}
@@ -152,5 +162,12 @@
 
   .items li {
     margin: 0;
+  }
+
+  .empty-actions {
+    display: flex;
+    gap: var(--s-3);
+    flex-wrap: wrap;
+    justify-content: center;
   }
 </style>

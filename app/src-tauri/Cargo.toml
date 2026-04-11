@@ -17,6 +17,7 @@ tauri-build.workspace = true
 [dependencies]
 # Vault engine
 unovault-core = { path = "../../crates/unovault-core" }
+unovault-import = { path = "../../crates/unovault-import" }
 unovault-macros = { path = "../../crates/unovault-macros" }
 
 # Tauri v2 runtime

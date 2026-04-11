@@ -36,6 +36,10 @@ pub fn run() {
             commands::add_item,
             commands::set_password,
             commands::copy_password_to_clipboard,
+            commands::preview_import,
+            commands::preview_import_with_source,
+            commands::commit_import,
+            commands::cancel_import,
             commands::format_version,
         ])
         .run(tauri::generate_context!());

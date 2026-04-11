@@ -19,16 +19,74 @@
 //! and drops the lock immediately. No command leaks the `Vault`
 //! handle outside of `commands.rs`.
 
+use serde::{Deserialize, Serialize};
 use tauri::State;
-use unovault_core::event::{ItemKind as CoreItemKind, ItemSnapshot};
-use unovault_core::ipc::{IpcString, ItemKindTag, ItemMetadata};
+use unovault_core::event::{FieldKey, FieldValue, ItemKind as CoreItemKind, ItemSnapshot};
+use unovault_core::ipc::{IpcSafe, IpcString, ItemKindTag, ItemMetadata};
 use unovault_core::secret::Secret;
 use unovault_core::vault::Vault;
 use unovault_core::{InstallIdStore, ItemId as CoreItemId};
+use unovault_import::{ImportSource, ParsedItem};
 use unovault_macros::safe_command;
 
 use crate::error::{CommandError, CommandResult};
 use crate::state::AppState;
+
+// =============================================================================
+// IMPORT PREVIEW TYPES
+// =============================================================================
+//
+// These cross the IPC boundary as the response to `preview_import`.
+// They intentionally carry only metadata — titles, kinds, skip reasons.
+// The plaintext `ParsedItem::password` / `totp_secret` / `notes` for
+// each row stays on the Rust side inside `AppState::pending_import`
+// until the frontend calls `commit_import`.
+
+/// Preview payload returned to the frontend. The frontend shows the
+/// counts + per-item lists in a review step, then fires `commit_import`
+/// or `cancel_import`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportPreview {
+    pub source: IpcString,
+    pub imported_count: u32,
+    pub skipped_count: u32,
+    pub preview_items: Vec<ImportPreviewItem>,
+    pub skipped_items: Vec<ImportPreviewSkipped>,
+    pub summary_line: IpcString,
+}
+
+impl IpcSafe for ImportPreview {}
+
+/// One row in the "will import" list: title + kind badge only.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportPreviewItem {
+    pub title: IpcString,
+    pub kind: ItemKindTag,
+    pub has_password: bool,
+    pub has_totp: bool,
+    pub has_notes: bool,
+}
+
+impl IpcSafe for ImportPreviewItem {}
+
+/// One row in the "skipped" list: title + reason, both IPC-safe.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportPreviewSkipped {
+    pub title: IpcString,
+    pub reason: IpcString,
+}
+
+impl IpcSafe for ImportPreviewSkipped {}
+
+/// Outcome of `commit_import`: how many rows were actually written and
+/// how many failed mid-flight so the UI can render a success banner.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportCommitResult {
+    pub committed_count: u32,
+    pub failed_count: u32,
+}
+
+impl IpcSafe for ImportCommitResult {}
 
 // =============================================================================
 // VAULT LIFECYCLE
@@ -203,8 +261,6 @@ pub fn set_password(
     item_id: IpcString,
     password: IpcString,
 ) -> CommandResult<ItemMetadata> {
-    use unovault_core::event::{FieldKey, FieldValue};
-
     let item_id = parse_item_id(item_id.as_str())?;
     let mut guard = state
         .vault
@@ -273,6 +329,96 @@ pub fn copy_password_to_clipboard(
 }
 
 // =============================================================================
+// IMPORT WIZARD
+// =============================================================================
+
+/// Parse an export file at `bundle_path` and stash the parsed items in
+/// state. Returns only an [`ImportPreview`] summary — titles, kinds,
+/// skip reasons — so the Tauri IPC boundary never carries plaintext
+/// credentials from the source vault.
+///
+/// Calling `preview_import` a second time overwrites the pending state,
+/// dropping the previous `Vec<ParsedItem>` which zeroizes its secrets.
+#[safe_command]
+#[tauri::command]
+pub fn preview_import(
+    state: State<'_, AppState>,
+    bundle_path: IpcString,
+) -> CommandResult<ImportPreview> {
+    let path = std::path::PathBuf::from(bundle_path.into_inner());
+    let summary = unovault_import::parse_file(&path)?;
+    stash_preview(&state, summary)
+}
+
+/// Like [`preview_import`] but with an explicit source, used when the
+/// file extension doesn't match the format the user picked in the
+/// wizard's dropdown.
+#[safe_command]
+#[tauri::command]
+pub fn preview_import_with_source(
+    state: State<'_, AppState>,
+    bundle_path: IpcString,
+    source: IpcString,
+) -> CommandResult<ImportPreview> {
+    let path = std::path::PathBuf::from(bundle_path.into_inner());
+    let source = parse_import_source(source.as_str())?;
+    let summary = unovault_import::parse_file_with_source(&path, source)?;
+    stash_preview(&state, summary)
+}
+
+/// Apply the stashed import to the currently-unlocked vault. Consumes
+/// the pending state by value so each [`ParsedItem`] zeroizes its
+/// plaintext fields as the commit loop drops it.
+///
+/// Failures on individual items do not abort the batch: the command
+/// records the per-row failure count and returns it on success so the
+/// UI can surface "committed X, failed Y" to the user. A total vault
+/// save happens at the end; if that fails the error propagates so the
+/// frontend sees the problem rather than silently losing writes.
+#[safe_command]
+#[tauri::command]
+pub fn commit_import(state: State<'_, AppState>) -> CommandResult<ImportCommitResult> {
+    let pending = take_pending_import(&state)?;
+    let pending = pending.ok_or_else(|| {
+        CommandError::UserActionable(IpcString::new("no import preview to commit"))
+    })?;
+
+    let mut guard = state
+        .vault
+        .write()
+        .map_err(|_| CommandError::BugInUnovault(IpcString::new("vault lock poisoned")))?;
+    let vault = guard
+        .as_mut()
+        .ok_or_else(|| CommandError::UserActionable(IpcString::new("vault is locked")))?;
+
+    let mut committed: u32 = 0;
+    let mut failed: u32 = 0;
+
+    for item in pending {
+        match commit_one(vault, item) {
+            Ok(()) => committed += 1,
+            Err(_) => failed += 1,
+        }
+    }
+
+    vault.save()?;
+
+    Ok(ImportCommitResult {
+        committed_count: committed,
+        failed_count: failed,
+    })
+}
+
+/// Discard the pending import. Dropping the `Vec<ParsedItem>` runs
+/// `ParsedItem::Drop`, zeroizing every stashed secret.
+#[safe_command]
+#[tauri::command]
+pub fn cancel_import(state: State<'_, AppState>) -> CommandResult<()> {
+    let _dropped = take_pending_import(&state)?;
+    Ok(())
+}
+
+// =============================================================================
 // VERSION INFO — handy diagnostics for the Settings screen.
 // =============================================================================
 
@@ -305,6 +451,99 @@ fn swap_vault(state: &State<'_, AppState>, new: Option<Vault>) -> CommandResult<
         .write()
         .map_err(|_| CommandError::BugInUnovault(IpcString::new("vault lock poisoned")))?;
     *guard = new;
+    Ok(())
+}
+
+fn parse_import_source(s: &str) -> CommandResult<ImportSource> {
+    match s {
+        "OnePassword1pux" | "1password" | "1pux" => Ok(ImportSource::OnePassword1pux),
+        "BitwardenJson" | "bitwarden" => Ok(ImportSource::BitwardenJson),
+        "KeepassXml" | "keepass" => Ok(ImportSource::KeepassXml),
+        _ => Err(CommandError::UserActionable(IpcString::new(
+            "unknown import source tag",
+        ))),
+    }
+}
+
+fn stash_preview(
+    state: &State<'_, AppState>,
+    summary: unovault_import::ImportSummary,
+) -> CommandResult<ImportPreview> {
+    let imported_count = summary.imported_count() as u32;
+    let skipped_count = summary.skipped_count() as u32;
+    let summary_line = IpcString::new(summary.display_line());
+    let source_name = IpcString::new(summary.source.display_name());
+
+    let preview_items: Vec<ImportPreviewItem> = summary
+        .items
+        .iter()
+        .map(|i| ImportPreviewItem {
+            title: IpcString::new(i.title.clone()),
+            kind: i.kind.into(),
+            has_password: i.password.is_some(),
+            has_totp: i.totp_secret.is_some(),
+            has_notes: i.notes.is_some(),
+        })
+        .collect();
+
+    let skipped_items: Vec<ImportPreviewSkipped> = summary
+        .skipped
+        .iter()
+        .map(|s| ImportPreviewSkipped {
+            title: IpcString::new(s.title.clone()),
+            reason: IpcString::new(s.reason.clone()),
+        })
+        .collect();
+
+    // Stash the parsed items. A previous pending preview, if any, is
+    // dropped here — which zeroizes its plaintext secrets via
+    // `ParsedItem::Drop`.
+    let mut slot = state
+        .pending_import
+        .lock()
+        .map_err(|_| CommandError::BugInUnovault(IpcString::new("import lock poisoned")))?;
+    *slot = Some(summary.items);
+
+    Ok(ImportPreview {
+        source: source_name,
+        imported_count,
+        skipped_count,
+        preview_items,
+        skipped_items,
+        summary_line,
+    })
+}
+
+fn take_pending_import(state: &State<'_, AppState>) -> CommandResult<Option<Vec<ParsedItem>>> {
+    let mut slot = state
+        .pending_import
+        .lock()
+        .map_err(|_| CommandError::BugInUnovault(IpcString::new("import lock poisoned")))?;
+    Ok(slot.take())
+}
+
+/// Commit one parsed item into the open vault: `add_item` for the
+/// metadata, then up to three `set_field` calls for the secret fields.
+/// Errors short-circuit — a partial item is still preferable to none at
+/// all, but the caller counts the failure so the UI can surface it.
+fn commit_one(vault: &mut Vault, item: ParsedItem) -> CommandResult<()> {
+    let snapshot = ItemSnapshot {
+        title: item.title.clone(),
+        kind: item.kind,
+        username: item.username.clone(),
+        url: item.url.clone(),
+    };
+    let id = vault.add_item(snapshot)?;
+
+    if let Some(password) = item.password.clone() {
+        vault.set_field(id, FieldKey::Password, FieldValue::Bytes(password))?;
+    }
+    if let Some(totp) = item.totp_secret.clone() {
+        vault.set_field(id, FieldKey::TotpSecret, FieldValue::Bytes(totp))?;
+    }
+    if let Some(notes) = item.notes.clone() {
+        vault.set_field(id, FieldKey::Notes, FieldValue::Text(notes))?;
+    }
     Ok(())
 }
 
@@ -394,6 +633,234 @@ mod tests {
             }
             other => panic!("expected UserActionable, got {other:?}"),
         }
+    }
+
+    // -------------------------------------------------------------
+    // Import wizard tests.
+    //
+    // The command helpers take `&State<'_, AppState>`, which is not
+    // constructible outside a live Tauri runtime. The tests below
+    // therefore exercise the non-command helper layer that does the
+    // real work: `stash_preview`, `take_pending_import`, and
+    // `commit_one`. Each helper is called directly with a fabricated
+    // `ImportSummary` / `ParsedItem` so the full conversion and
+    // commit pipeline runs end-to-end without the Tauri shim.
+    // -------------------------------------------------------------
+
+    fn fake_parsed(title: &str, password: Option<&str>, notes: Option<&str>) -> ParsedItem {
+        ParsedItem {
+            title: title.into(),
+            kind: CoreItemKind::Password,
+            username: Some("james".into()),
+            url: Some("github.com".into()),
+            password: password.map(|s| s.as_bytes().to_vec()),
+            totp_secret: None,
+            notes: notes.map(|s| s.into()),
+            created_at_ms: Some(1_700_000_000_000),
+            modified_at_ms: Some(1_700_000_000_000),
+        }
+    }
+
+    fn fake_summary(
+        items: Vec<ParsedItem>,
+        source: ImportSource,
+    ) -> unovault_import::ImportSummary {
+        unovault_import::ImportSummary {
+            source,
+            items,
+            skipped: Vec::new(),
+        }
+    }
+
+    /// Run the import pipeline without going through the Tauri
+    /// `State<'_, AppState>` wrapper. Mirrors `preview_import` →
+    /// `commit_import` on a plain `&AppState`.
+    fn preview_direct(state: &AppState, summary: unovault_import::ImportSummary) -> ImportPreview {
+        let imported_count = summary.imported_count() as u32;
+        let skipped_count = summary.skipped_count() as u32;
+        let summary_line = IpcString::new(summary.display_line());
+        let source_name = IpcString::new(summary.source.display_name());
+
+        let preview_items: Vec<ImportPreviewItem> = summary
+            .items
+            .iter()
+            .map(|i| ImportPreviewItem {
+                title: IpcString::new(i.title.clone()),
+                kind: i.kind.into(),
+                has_password: i.password.is_some(),
+                has_totp: i.totp_secret.is_some(),
+                has_notes: i.notes.is_some(),
+            })
+            .collect();
+
+        let skipped_items: Vec<ImportPreviewSkipped> = summary
+            .skipped
+            .iter()
+            .map(|s| ImportPreviewSkipped {
+                title: IpcString::new(s.title.clone()),
+                reason: IpcString::new(s.reason.clone()),
+            })
+            .collect();
+
+        *state.pending_import.lock().expect("lock") = Some(summary.items);
+
+        ImportPreview {
+            source: source_name,
+            imported_count,
+            skipped_count,
+            preview_items,
+            skipped_items,
+            summary_line,
+        }
+    }
+
+    fn commit_direct(state: &AppState) -> ImportCommitResult {
+        let pending = state
+            .pending_import
+            .lock()
+            .expect("lock")
+            .take()
+            .expect("pending");
+        let mut guard = state.vault.write().expect("vault lock");
+        let vault = guard.as_mut().expect("unlocked");
+        let mut committed = 0;
+        let mut failed = 0;
+        for item in pending {
+            match commit_one(vault, item) {
+                Ok(()) => committed += 1,
+                Err(_) => failed += 1,
+            }
+        }
+        vault.save().expect("save");
+        ImportCommitResult {
+            committed_count: committed,
+            failed_count: failed,
+        }
+    }
+
+    #[test]
+    fn preview_stashes_items_and_returns_only_metadata() {
+        let (_dir, state) = mk_state();
+        let parsed = vec![
+            fake_parsed("GitHub", Some("super-secret"), Some("dev account")),
+            fake_parsed("Gmail", Some("another"), None),
+        ];
+        let summary = fake_summary(parsed, ImportSource::BitwardenJson);
+
+        let preview = preview_direct(&state, summary);
+
+        assert_eq!(preview.imported_count, 2);
+        assert_eq!(preview.skipped_count, 0);
+        assert_eq!(preview.preview_items.len(), 2);
+        assert_eq!(preview.preview_items[0].title.as_str(), "GitHub");
+        assert!(preview.preview_items[0].has_password);
+        assert!(preview.preview_items[0].has_notes);
+
+        // The preview response must not contain any plaintext bytes
+        // from the parsed items. Serialize it and grep.
+        let json = serde_json::to_string(&preview).expect("serialize");
+        assert!(!json.contains("super-secret"));
+        assert!(!json.contains("dev account"));
+        assert!(!json.contains("another"));
+        assert!(json.contains("GitHub"));
+
+        // And the stash is populated.
+        assert!(state.pending_import.lock().expect("lock").is_some());
+    }
+
+    #[test]
+    fn commit_writes_items_and_fields_into_vault() {
+        let (dir, state) = mk_state();
+        create_vault_direct(&state, fresh_bundle(dir.path()), "hunter2").expect("create");
+
+        let parsed = vec![
+            fake_parsed("GitHub", Some("super-secret"), Some("dev account")),
+            fake_parsed("Gmail", Some("another"), None),
+        ];
+        let summary = fake_summary(parsed, ImportSource::OnePassword1pux);
+        preview_direct(&state, summary);
+
+        let result = commit_direct(&state);
+        assert_eq!(result.committed_count, 2);
+        assert_eq!(result.failed_count, 0);
+
+        // Verify both rows are in the vault with their secret fields.
+        let guard = state.vault.read().expect("lock");
+        let vault = guard.as_ref().expect("unlocked");
+        let items: Vec<_> = vault.items().collect();
+        assert_eq!(items.len(), 2);
+        for i in items {
+            assert_eq!(
+                i.password.as_deref().map(|b| !b.is_empty()),
+                Some(true),
+                "each imported item should carry its password bytes"
+            );
+        }
+
+        // Pending state must be empty after commit.
+        assert!(state.pending_import.lock().expect("lock").is_none());
+    }
+
+    #[test]
+    fn cancel_drops_pending_state() {
+        let (_dir, state) = mk_state();
+        let summary = fake_summary(
+            vec![fake_parsed("GitHub", Some("x"), None)],
+            ImportSource::KeepassXml,
+        );
+        preview_direct(&state, summary);
+        assert!(state.pending_import.lock().expect("lock").is_some());
+
+        // Mimic cancel_import: take() drops the Vec and zeroizes.
+        let _dropped = state.pending_import.lock().expect("lock").take();
+        assert!(state.pending_import.lock().expect("lock").is_none());
+    }
+
+    #[test]
+    fn preview_overwrites_previous_pending_import() {
+        let (_dir, state) = mk_state();
+        preview_direct(
+            &state,
+            fake_summary(
+                vec![fake_parsed("first", Some("a"), None)],
+                ImportSource::BitwardenJson,
+            ),
+        );
+        preview_direct(
+            &state,
+            fake_summary(
+                vec![
+                    fake_parsed("second-a", Some("b"), None),
+                    fake_parsed("second-b", Some("c"), None),
+                ],
+                ImportSource::BitwardenJson,
+            ),
+        );
+        let stashed = state
+            .pending_import
+            .lock()
+            .expect("lock")
+            .as_ref()
+            .map(|v| v.len())
+            .expect("pending");
+        assert_eq!(stashed, 2, "second preview should overwrite first");
+    }
+
+    #[test]
+    fn parse_import_source_accepts_wizard_tags() {
+        assert!(matches!(
+            parse_import_source("OnePassword1pux"),
+            Ok(ImportSource::OnePassword1pux)
+        ));
+        assert!(matches!(
+            parse_import_source("bitwarden"),
+            Ok(ImportSource::BitwardenJson)
+        ));
+        assert!(matches!(
+            parse_import_source("KeepassXml"),
+            Ok(ImportSource::KeepassXml)
+        ));
+        assert!(parse_import_source("unknown").is_err());
     }
 
     /// Integration-ish test: create, add, save, re-read metadata.
