@@ -39,6 +39,7 @@ use std::io::{self, Read, Write};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub mod bridge_client;
 pub mod protocol;
 
 // =============================================================================

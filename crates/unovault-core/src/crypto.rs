@@ -101,9 +101,19 @@ impl KdfParams {
         p_cost: 4,
     };
 
-    /// Cheaper parameters used only in tests so the suite finishes in
-    /// seconds, not minutes. Never use these in production.
-    #[cfg(test)]
+    /// Cheaper parameters used by the test suites of this crate and
+    /// its dependents so they finish in milliseconds instead of
+    /// minutes.
+    ///
+    /// **Never use this value in production.** It is a deliberate
+    /// weakening of the KDF for test performance and produces keys
+    /// that a modest attacker could brute-force. The constant is
+    /// `pub` rather than `pub(crate)` so downstream crates
+    /// (`unovault-app`, `unovault-passkey`, the integration test
+    /// harnesses) can build fast in-memory vaults. Exposing the
+    /// constant keeps the audit trail one grep away — any
+    /// production code path that mentions `TEST_ONLY` is a review
+    /// blocker.
     pub const TEST_ONLY: Self = Self {
         m_cost_kib: 8, // 8 KiB — crypto is fine, just fast
         t_cost: 1,

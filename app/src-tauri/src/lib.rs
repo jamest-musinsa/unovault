@@ -7,6 +7,7 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+pub mod bridge;
 pub mod commands;
 pub mod error;
 pub mod state;
@@ -24,8 +25,37 @@ pub use state::AppState;
 /// than calling `.expect()` (which clippy denies under the workspace
 /// panic policy) so the behavior is explicit and greppable.
 pub fn run() {
+    let app_state = AppState::new();
+
+    // Start the local socket bridge for the Chrome extension's
+    // native messaging host. Failure to bind is logged and the app
+    // keeps running — the extension will show "unovault is not
+    // running" to the user, which is a far better posture than
+    // refusing to launch the desktop app over a socket issue.
+    let vault_handle = app_state.vault_handle();
+    let socket_path = bridge::default_socket_path();
+    match bridge::spawn(socket_path, vault_handle) {
+        Ok(_server) => {
+            // `_server` is intentionally dropped at end-of-function.
+            // On drop the socket file is removed; but because this
+            // function runs until `tauri::Builder::run` returns (ie.
+            // the app is quitting), the listener thread dies
+            // naturally with the process. The drop cleans up the
+            // leftover file on exit. Holding it in the AppState
+            // would be cleaner but requires AppState to be
+            // mutable through Tauri's State wrapper; deferred until
+            // a planned refactor.
+        }
+        Err(err) => {
+            #[allow(clippy::print_stderr)]
+            {
+                eprintln!("unovault: bridge socket failed to start: {err}");
+            }
+        }
+    }
+
     let build_result = tauri::Builder::default()
-        .manage(AppState::new())
+        .manage(app_state)
         .invoke_handler(tauri::generate_handler![
             commands::create_vault,
             commands::unlock_vault,
@@ -36,6 +66,10 @@ pub fn run() {
             commands::add_item,
             commands::set_password,
             commands::copy_password_to_clipboard,
+            commands::has_recovery,
+            commands::change_password,
+            commands::enable_recovery_phrase,
+            commands::rotate_recovery_phrase,
             commands::preview_import,
             commands::preview_import_with_source,
             commands::commit_import,

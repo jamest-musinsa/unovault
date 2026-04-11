@@ -12,6 +12,29 @@
 
 import type { HostResponsePayload, ItemRef } from './protocol';
 
+// Origin approval helper. Duplicated verbatim into popup.ts so each
+// entry point gets its own copy after vite's per-entry bundling —
+// sharing a module would split into a chunk file that MV3 content
+// scripts cannot load without an `web_accessible_resources` dance.
+// Keep the two copies in sync.
+const APPROVAL_STORAGE_KEY = 'approvedOrigins';
+async function getApprovalStatus(origin: string): Promise<'approved' | 'unknown'> {
+  return new Promise((resolve) => {
+    chrome.storage.local.get(APPROVAL_STORAGE_KEY, (items) => {
+      if (chrome.runtime.lastError) {
+        resolve('unknown');
+        return;
+      }
+      const raw = items[APPROVAL_STORAGE_KEY];
+      if (raw && typeof raw === 'object' && origin in raw) {
+        resolve('approved');
+      } else {
+        resolve('unknown');
+      }
+    });
+  });
+}
+
 interface FillMessage {
   kind: 'fill-request';
 }
@@ -88,9 +111,22 @@ async function fillFromUnovault() {
   const password = findPasswordInput(form);
   if (!password) return;
 
+  // Origin approval gate. First-time origins have to be approved
+  // from the popup before the content script will request
+  // credentials. This is defence in depth on top of the desktop
+  // app's own vault-is-locked check.
+  const origin = window.location.origin;
+  const status = await getApprovalStatus(origin);
+  if (status !== 'approved') {
+    console.info(
+      `[unovault] origin ${origin} not approved — open the popup to allow it`,
+    );
+    return;
+  }
+
   const listResponse = await askWorker<HostResponsePayload>({
     method: 'list_matching_items',
-    origin: window.location.origin,
+    origin,
   });
   if (listResponse.kind !== 'list_matching_items') {
     console.warn('[unovault] list failed', listResponse);

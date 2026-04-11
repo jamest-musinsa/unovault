@@ -51,6 +51,10 @@
     app.setView({ name: 'import' });
   }
 
+  function openSettings() {
+    app.setView({ name: 'settings' });
+  }
+
   function metaFor(username: string | null, url: string | null): string {
     const parts = [username, url].filter((x): x is string => !!x);
     return parts.join(' · ');
@@ -67,6 +71,7 @@
     <div class="header-actions">
       <Button variant="secondary" size="sm" onclick={addNew}>Add item</Button>
       <Button variant="ghost" size="sm" onclick={openImport}>Import</Button>
+      <Button variant="ghost" size="sm" onclick={openSettings}>Settings</Button>
       <Button variant="ghost" size="sm" onclick={onLock}>Lock</Button>
     </div>
   </header>

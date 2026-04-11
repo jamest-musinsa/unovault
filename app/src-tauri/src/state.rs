@@ -15,13 +15,21 @@
 //! render pass.
 
 use std::path::PathBuf;
-use std::sync::{Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use unovault_core::vault::Vault;
 use unovault_import::ParsedItem;
 
 /// The one thing every Tauri command reaches for: a shared handle to
 /// the current vault plus the paths the backend needs to persist
 /// auxiliary state.
+///
+/// # Cross-thread access
+///
+/// `vault` lives behind `Arc<RwLock<_>>` so two unrelated owners can
+/// share it: the Tauri command handlers (via `State<'_, AppState>`)
+/// and the bridge socket thread spawned from `lib.rs::run()`. The
+/// `Arc` is cloned once at startup; all subsequent callers deref
+/// through it transparently.
 ///
 /// [`AppState::pending_import`] holds the parsed items from the most
 /// recent `preview_import` call. Keeping them here means the plaintext
@@ -30,7 +38,7 @@ use unovault_import::ParsedItem;
 /// stashed items by value so a committed or cancelled import zeroizes
 /// through [`ParsedItem::Drop`].
 pub struct AppState {
-    pub vault: RwLock<Option<Vault>>,
+    pub vault: Arc<RwLock<Option<Vault>>>,
     pub pending_import: Mutex<Option<Vec<ParsedItem>>>,
     pub install_id_dir: PathBuf,
 }
@@ -42,7 +50,7 @@ impl AppState {
     pub fn new() -> Self {
         let install_id_dir = default_install_id_dir();
         Self {
-            vault: RwLock::new(None),
+            vault: Arc::new(RwLock::new(None)),
             pending_import: Mutex::new(None),
             install_id_dir,
         }
@@ -53,10 +61,17 @@ impl AppState {
     /// write at a tempdir.
     pub fn with_install_id_dir(install_id_dir: PathBuf) -> Self {
         Self {
-            vault: RwLock::new(None),
+            vault: Arc::new(RwLock::new(None)),
             pending_import: Mutex::new(None),
             install_id_dir,
         }
+    }
+
+    /// Clone the vault handle for a thread that needs independent
+    /// ownership of the `Arc`. Used by the bridge socket server in
+    /// [`crate::bridge`].
+    pub fn vault_handle(&self) -> Arc<RwLock<Option<Vault>>> {
+        Arc::clone(&self.vault)
     }
 
     /// Whether a vault is currently unlocked in this state.

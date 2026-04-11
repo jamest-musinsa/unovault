@@ -269,10 +269,13 @@ impl Vault {
         Ok((vault, phrase))
     }
 
-    /// Like [`Vault::create`], but uses cheap test argon2id params so the
-    /// test suite finishes in milliseconds. Never call this from
-    /// production code.
-    #[cfg(test)]
+    /// Like [`Vault::create`], but uses [`KdfParams::TEST_ONLY`] so
+    /// the test suite finishes in milliseconds.
+    ///
+    /// **Never call this from production code.** Exposed publicly
+    /// so downstream crates (`unovault-app`, `unovault-passkey`,
+    /// the integration test harnesses) can spin up fast in-memory
+    /// vaults in their own test suites.
     pub fn create_for_tests(
         bundle_path: impl AsRef<Path>,
         password: Secret<String>,
@@ -281,9 +284,9 @@ impl Vault {
         Self::create_inner(bundle_path, password, None, install, KdfParams::TEST_ONLY)
     }
 
-    /// Like [`Vault::create_with_recovery`], but uses cheap test argon2id
-    /// params so the test suite finishes in milliseconds.
-    #[cfg(test)]
+    /// Like [`Vault::create_with_recovery`], but uses
+    /// [`KdfParams::TEST_ONLY`]. Same production warning as
+    /// [`Vault::create_for_tests`].
     pub fn create_with_recovery_for_tests(
         bundle_path: impl AsRef<Path>,
         password: Secret<String>,
@@ -479,6 +482,33 @@ impl Vault {
                 .checked_add(1)
                 .ok_or(BugInUnovaultError::ChunkCounterOverflow)?,
         })
+    }
+
+    /// Verify that `password` is the current master password by
+    /// re-deriving the KEK and attempting to unwrap the stored
+    /// wrapped master key. Returns `Ok(true)` on success,
+    /// `Ok(false)` on a mismatch, and `Err` on a bug or I/O
+    /// failure reading the manifest.
+    ///
+    /// Used by the settings UI to gate rotation flows — the user
+    /// proves they know the current password before we overwrite
+    /// the password slot.
+    pub fn verify_password(&self, password: &Secret<String>) -> Result<bool, VaultError> {
+        let manifest = load_manifest(&self.paths.bundle)?;
+        let salt = manifest.password_salt()?;
+        let wrapped = manifest.password_wrapped_key()?;
+        let kek = crypto::derive_kek(password, &salt, &manifest.password_kdf)?;
+        match crypto::unwrap_master_key(&kek, &wrapped) {
+            Ok(_) => Ok(true),
+            Err(VaultError::UserActionable(UserActionableError::WrongPassword)) => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Whether this vault has a recovery slot.
+    pub fn has_recovery(&self) -> Result<bool, VaultError> {
+        let manifest = load_manifest(&self.paths.bundle)?;
+        Ok(manifest.has_recovery())
     }
 
     /// Change the master password on an unlocked vault. Re-derives a

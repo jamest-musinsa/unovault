@@ -128,6 +128,29 @@ export async function formatVersion(): Promise<number> {
 }
 
 // =============================================================================
+// RECOVERY + PASSWORD ROTATION — mirrors unovault_app::commands (week 21)
+// =============================================================================
+
+export async function hasRecovery(): Promise<boolean> {
+  return invoke('has_recovery');
+}
+
+export async function changePassword(
+  currentPassword: string,
+  newPassword: string,
+): Promise<void> {
+  return invoke('change_password', { currentPassword, newPassword });
+}
+
+export async function enableRecoveryPhrase(): Promise<string> {
+  return invoke('enable_recovery_phrase');
+}
+
+export async function rotateRecoveryPhrase(): Promise<string> {
+  return invoke('rotate_recovery_phrase');
+}
+
+// =============================================================================
 // IMPORT WIZARD — mirror unovault_app::commands::ImportPreview et al.
 // =============================================================================
 

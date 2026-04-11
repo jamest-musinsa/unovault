@@ -9,6 +9,37 @@ import type {
   PongResponse,
 } from '../src/protocol';
 
+// Origin approval helpers. Duplicated verbatim from content.ts so
+// each vite entry gets a self-contained bundle — see the comment
+// there for why. Keep in sync.
+const APPROVAL_STORAGE_KEY = 'approvedOrigins';
+interface ApprovalState {
+  [origin: string]: true;
+}
+async function loadApprovalState(): Promise<ApprovalState> {
+  return new Promise((resolve) => {
+    chrome.storage.local.get(APPROVAL_STORAGE_KEY, (items) => {
+      if (chrome.runtime.lastError) {
+        resolve({});
+        return;
+      }
+      const raw = items[APPROVAL_STORAGE_KEY];
+      resolve(raw && typeof raw === 'object' ? (raw as ApprovalState) : {});
+    });
+  });
+}
+async function getApprovalStatus(origin: string): Promise<'approved' | 'unknown'> {
+  const state = await loadApprovalState();
+  return state[origin] ? 'approved' : 'unknown';
+}
+async function approveOrigin(origin: string): Promise<void> {
+  const state = await loadApprovalState();
+  state[origin] = true;
+  return new Promise((resolve) => {
+    chrome.storage.local.set({ [APPROVAL_STORAGE_KEY]: state }, () => resolve());
+  });
+}
+
 async function ask<T extends HostResponsePayload>(payload: unknown): Promise<T> {
   return new Promise((resolve, reject) => {
     chrome.runtime.sendMessage(payload, (response) => {
@@ -72,6 +103,37 @@ async function triggerFill() {
   window.close();
 }
 
+function renderApprovalPrompt(origin: string) {
+  const list = document.getElementById('items');
+  if (!list) return;
+  list.innerHTML = '';
+
+  const card = document.createElement('div');
+  card.className = 'item-row approval-prompt';
+
+  const text = document.createElement('div');
+  const title = document.createElement('div');
+  title.className = 'item-title';
+  title.textContent = 'First time on this site';
+  const body = document.createElement('div');
+  body.className = 'item-username';
+  body.textContent = `Allow unovault to autofill on ${origin}?`;
+  text.appendChild(title);
+  text.appendChild(body);
+
+  const allow = document.createElement('button');
+  allow.className = 'btn-secondary';
+  allow.textContent = 'Allow';
+  allow.addEventListener('click', async () => {
+    await approveOrigin(origin);
+    bootstrap();
+  });
+
+  card.appendChild(text);
+  card.appendChild(allow);
+  list.appendChild(card);
+}
+
 async function bootstrap() {
   const originEl = document.getElementById('origin');
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -90,6 +152,19 @@ async function bootstrap() {
     setStatus(false, 'Host unavailable');
     console.error('[unovault popup] ping failed', err);
     return;
+  }
+
+  // Origin approval gate. Unapproved origins show a consent
+  // prompt instead of the matching items list. The user explicitly
+  // clicks "Allow" before the extension queries the vault for
+  // credentials on this domain.
+  if (url) {
+    const status = await getApprovalStatus(origin);
+    if (status !== 'approved') {
+      renderApprovalPrompt(origin);
+      document.getElementById('refresh')?.addEventListener('click', bootstrap);
+      return;
+    }
   }
 
   try {

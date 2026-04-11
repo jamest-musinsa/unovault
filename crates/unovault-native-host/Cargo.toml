@@ -20,5 +20,9 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 
+# Platform-specific default path for the bridge socket
+# (~/Library/Application Support/unovault/bridge.sock on macOS).
+dirs = "5"
+
 [dev-dependencies]
 tempfile.workspace = true

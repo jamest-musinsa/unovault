@@ -9,6 +9,7 @@
   import ItemDetail from './views/ItemDetail.svelte';
   import AddItem from './views/AddItem.svelte';
   import ImportWizard from './views/ImportWizard.svelte';
+  import Settings from './views/Settings.svelte';
   import StatusBar from './views/StatusBar.svelte';
   import { app } from './lib/store.svelte';
   import { registerShortcuts } from './lib/keyboard.svelte';
@@ -32,7 +33,8 @@
           if (
             current.name === 'item-detail' ||
             current.name === 'add-item' ||
-            current.name === 'import'
+            current.name === 'import' ||
+            current.name === 'settings'
           ) {
             app.setView({ name: 'vault-list' });
           }
@@ -60,6 +62,8 @@
     <AddItem />
   {:else if app.view.name === 'import'}
     <ImportWizard />
+  {:else if app.view.name === 'settings'}
+    <Settings />
   {/if}
 
   <StatusBar />

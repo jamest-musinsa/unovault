@@ -329,6 +329,105 @@ pub fn copy_password_to_clipboard(
 }
 
 // =============================================================================
+// RECOVERY + PASSWORD ROTATION (week 21)
+// =============================================================================
+
+/// Whether the currently open vault has a recovery slot. Used by
+/// the settings view to decide whether the button reads "Enable
+/// recovery phrase" or "Rotate recovery phrase".
+#[safe_command]
+#[tauri::command]
+pub fn has_recovery(state: State<'_, AppState>) -> CommandResult<bool> {
+    let guard = state
+        .vault
+        .read()
+        .map_err(|_| CommandError::BugInUnovault(IpcString::new("vault lock poisoned")))?;
+    let vault = guard
+        .as_ref()
+        .ok_or_else(|| CommandError::UserActionable(IpcString::new("vault is locked")))?;
+    Ok(vault.has_recovery()?)
+}
+
+/// Change the master password. Requires the current password as a
+/// speed bump — the user is already unlocked, so this is defence
+/// in depth against "someone walks up to the unlocked laptop."
+#[safe_command]
+#[tauri::command]
+pub fn change_password(
+    state: State<'_, AppState>,
+    current_password: IpcString,
+    new_password: IpcString,
+) -> CommandResult<()> {
+    let mut guard = state
+        .vault
+        .write()
+        .map_err(|_| CommandError::BugInUnovault(IpcString::new("vault lock poisoned")))?;
+    let vault = guard
+        .as_mut()
+        .ok_or_else(|| CommandError::UserActionable(IpcString::new("vault is locked")))?;
+
+    let current = Secret::new(current_password.into_inner());
+    let ok = vault.verify_password(&current)?;
+    if !ok {
+        return Err(CommandError::UserActionable(IpcString::new(
+            "current password is incorrect",
+        )));
+    }
+
+    let new = Secret::new(new_password.into_inner());
+    vault.change_password(new)?;
+    Ok(())
+}
+
+/// Enable the recovery slot on a vault that doesn't have one, or
+/// rotate the existing slot. Returns the fresh 24-word BIP39 phrase
+/// as an `IpcString` for one-time display to the user.
+///
+/// # The phrase crosses the boundary — deliberate exception
+///
+/// The design rule is "no plaintext credential material over IPC."
+/// The recovery phrase IS credential material. The exception is
+/// deliberate and audited: the phrase must reach the user's
+/// display somewhere, and the alternative (show it in a native
+/// dialog spawned from Rust) is a lot more plumbing for marginal
+/// benefit. The frontend shows the phrase once in a confirmation
+/// screen and zeroes its copy after the user clicks "Saved".
+/// Future work: route the phrase through a dedicated reveal path
+/// that draws native text outside the WebView.
+#[safe_command]
+#[tauri::command]
+pub fn rotate_recovery_phrase(state: State<'_, AppState>) -> CommandResult<IpcString> {
+    let mut guard = state
+        .vault
+        .write()
+        .map_err(|_| CommandError::BugInUnovault(IpcString::new("vault lock poisoned")))?;
+    let vault = guard
+        .as_mut()
+        .ok_or_else(|| CommandError::UserActionable(IpcString::new("vault is locked")))?;
+
+    let phrase = vault.rotate_recovery()?;
+    // Expose once. See exception note above.
+    Ok(IpcString::new(phrase.expose().to_string()))
+}
+
+/// Enable the recovery slot on a fresh vault. Fails if the vault
+/// already has one — use [`rotate_recovery_phrase`] for that.
+#[safe_command]
+#[tauri::command]
+pub fn enable_recovery_phrase(state: State<'_, AppState>) -> CommandResult<IpcString> {
+    let mut guard = state
+        .vault
+        .write()
+        .map_err(|_| CommandError::BugInUnovault(IpcString::new("vault lock poisoned")))?;
+    let vault = guard
+        .as_mut()
+        .ok_or_else(|| CommandError::UserActionable(IpcString::new("vault is locked")))?;
+
+    let phrase = vault.enable_recovery()?;
+    Ok(IpcString::new(phrase.expose().to_string()))
+}
+
+// =============================================================================
 // IMPORT WIZARD
 // =============================================================================
 

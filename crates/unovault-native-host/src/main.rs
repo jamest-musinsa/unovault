@@ -28,7 +28,9 @@
 //! error keeps the break visible during development.
 
 use std::io::{self, Read, Write};
+use std::path::Path;
 
+use unovault_native_host::bridge_client;
 use unovault_native_host::protocol::{
     HostRequest, HostRequestPayload, HostResponse, HostResponsePayload,
 };
@@ -39,21 +41,16 @@ use unovault_native_host::{read_frame, write_frame, FrameError};
 const HOST_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn main() -> std::process::ExitCode {
-    // Chrome connects stdin/stdout to the host via pipes. Read
-    // frames until either side closes or a parse error bubbles up.
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut reader = stdin.lock();
     let mut writer = stdout.lock();
 
-    match run_loop(&mut reader, &mut writer) {
+    let socket_path = bridge_client::default_socket_path();
+
+    match run_loop(&mut reader, &mut writer, &socket_path) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(err) => {
-            // We cannot `eprintln!` (panic-policy clippy lint) and
-            // stderr would go into Chrome's noisy native-messaging
-            // log anyway. Encoding the error as a frame is the
-            // nicest parting message — if the writer is already
-            // dead we return non-zero and move on.
             let fatal = HostResponse {
                 request_id: "fatal".into(),
                 payload: HostResponsePayload::Error {
@@ -67,37 +64,42 @@ fn main() -> std::process::ExitCode {
     }
 }
 
-fn run_loop<R: Read, W: Write>(reader: &mut R, writer: &mut W) -> Result<(), FrameError> {
+/// Read framed requests from `reader`, dispatch each one through
+/// `route_request`, write the framed response to `writer`. Exits
+/// cleanly on EOF. The `socket_path` is threaded through rather
+/// than captured globally so the integration tests can point at a
+/// mock server in a tempdir.
+fn run_loop<R: Read, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+    socket_path: &Path,
+) -> Result<(), FrameError> {
     loop {
         match read_frame::<_, HostRequest>(reader)? {
-            None => return Ok(()), // clean EOF — Chrome closed the port
+            None => return Ok(()),
             Some(request) => {
-                let response = route_request(request);
+                let response = route_request(request, socket_path);
                 write_frame(writer, &response)?;
             }
         }
     }
 }
 
-fn route_request(request: HostRequest) -> HostResponse {
+fn route_request(request: HostRequest, socket_path: &Path) -> HostResponse {
     let request_id = request.request_id.clone();
     let payload = match request.payload {
+        // Ping never touches the desktop app — it's a local
+        // liveness probe for the extension to tell whether the
+        // native host binary itself is working.
         HostRequestPayload::Ping => HostResponsePayload::Pong {
             version: HOST_VERSION.into(),
         },
 
-        // The two stubs below block the chain until the desktop app
-        // ships a local socket surface. They return a structured
-        // error so the extension's `kind === 'error'` branch fires
-        // and the popup shows "unovault is not running."
-        HostRequestPayload::ListMatchingItems { origin: _ } => HostResponsePayload::Error {
-            category: "NotImplemented".into(),
-            message: "list_matching_items is not wired to the desktop app yet".into(),
-        },
-        HostRequestPayload::GetPassword { item_id: _ } => HostResponsePayload::Error {
-            category: "NotImplemented".into(),
-            message: "get_password is not wired to the desktop app yet".into(),
-        },
+        // Everything else is forwarded verbatim over the Unix
+        // socket. Transport failures are surfaced as
+        // `NativeHostUnavailable` by the client; structured errors
+        // from the server side pass through unchanged.
+        other => bridge_client::forward(socket_path, &request_id, other),
     };
 
     HostResponse {
@@ -109,33 +111,47 @@ fn route_request(request: HostRequest) -> HostResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Cursor;
+    use std::io::{Cursor, Read, Write};
+    use std::os::unix::net::UnixListener;
+    use std::path::PathBuf;
+    use std::thread;
+    use unovault_native_host::bridge_client::{
+        BridgeRequest, BridgeResponse, BridgeResponsePayload,
+    };
+
+    /// Dummy path that will never resolve; used by tests that care
+    /// only about the local Ping path.
+    fn bogus_socket_path() -> PathBuf {
+        PathBuf::from("/tmp/unovault-native-host-bogus-socket.sock")
+    }
 
     /// Helper that runs one request through `run_loop` and returns
-    /// the single response frame the host wrote.
-    fn round_trip(request: HostRequest) -> HostResponse {
-        // Build a stdin stream: one framed request.
+    /// the single response frame the host wrote. `socket_path`
+    /// controls where the forwarded requests go — pass the bogus
+    /// path for tests that only ping.
+    fn round_trip_with_socket(request: HostRequest, socket_path: &Path) -> HostResponse {
         let mut stdin_bytes = Vec::new();
         write_frame(&mut stdin_bytes, &request).expect("write request");
 
         let mut reader = Cursor::new(stdin_bytes);
         let mut writer: Vec<u8> = Vec::new();
-        run_loop(&mut reader, &mut writer).expect("run_loop");
+        run_loop(&mut reader, &mut writer, socket_path).expect("run_loop");
 
-        // Decode whatever the host wrote.
         let mut response_reader = Cursor::new(writer);
-        let response: HostResponse = read_frame(&mut response_reader)
+        read_frame(&mut response_reader)
             .expect("read response")
-            .expect("some response");
-        response
+            .expect("some response")
     }
 
     #[test]
     fn ping_returns_pong_with_version() {
-        let response = round_trip(HostRequest {
-            request_id: "r1".into(),
-            payload: HostRequestPayload::Ping,
-        });
+        let response = round_trip_with_socket(
+            HostRequest {
+                request_id: "r1".into(),
+                payload: HostRequestPayload::Ping,
+            },
+            &bogus_socket_path(),
+        );
         assert_eq!(response.request_id, "r1");
         match response.payload {
             HostResponsePayload::Pong { version } => {
@@ -146,40 +162,45 @@ mod tests {
     }
 
     #[test]
-    fn list_matching_items_stub_returns_not_implemented_error() {
-        let response = round_trip(HostRequest {
-            request_id: "r2".into(),
-            payload: HostRequestPayload::ListMatchingItems {
-                origin: "https://github.com".into(),
+    fn list_matching_items_without_desktop_app_returns_unavailable() {
+        let response = round_trip_with_socket(
+            HostRequest {
+                request_id: "r2".into(),
+                payload: HostRequestPayload::ListMatchingItems {
+                    origin: "https://github.com".into(),
+                },
             },
-        });
+            &bogus_socket_path(),
+        );
         match response.payload {
             HostResponsePayload::Error { category, .. } => {
-                assert_eq!(category, "NotImplemented");
+                assert_eq!(category, "NativeHostUnavailable");
             }
-            other => panic!("expected Error, got {other:?}"),
+            other => panic!("expected NativeHostUnavailable, got {other:?}"),
         }
     }
 
     #[test]
-    fn get_password_stub_returns_not_implemented_error() {
-        let response = round_trip(HostRequest {
-            request_id: "r3".into(),
-            payload: HostRequestPayload::GetPassword {
-                item_id: "abc".into(),
+    fn get_password_without_desktop_app_returns_unavailable() {
+        let response = round_trip_with_socket(
+            HostRequest {
+                request_id: "r3".into(),
+                payload: HostRequestPayload::GetPassword {
+                    item_id: "abc".into(),
+                },
             },
-        });
+            &bogus_socket_path(),
+        );
         match response.payload {
             HostResponsePayload::Error { category, .. } => {
-                assert_eq!(category, "NotImplemented");
+                assert_eq!(category, "NativeHostUnavailable");
             }
-            other => panic!("expected Error, got {other:?}"),
+            other => panic!("expected NativeHostUnavailable, got {other:?}"),
         }
     }
 
     #[test]
     fn run_loop_handles_multiple_requests_in_one_connection() {
-        // Two requests back-to-back, then EOF.
         let mut stdin_bytes = Vec::new();
         write_frame(
             &mut stdin_bytes,
@@ -200,7 +221,7 @@ mod tests {
 
         let mut reader = Cursor::new(stdin_bytes);
         let mut writer: Vec<u8> = Vec::new();
-        run_loop(&mut reader, &mut writer).expect("run_loop");
+        run_loop(&mut reader, &mut writer, &bogus_socket_path()).expect("run_loop");
 
         let mut response_reader = Cursor::new(writer);
         let first: HostResponse = read_frame(&mut response_reader)
@@ -217,10 +238,65 @@ mod tests {
     fn run_loop_exits_cleanly_on_eof_without_frame() {
         let mut reader: &[u8] = &[];
         let mut writer: Vec<u8> = Vec::new();
-        run_loop(&mut reader, &mut writer).expect("clean EOF");
+        run_loop(&mut reader, &mut writer, &bogus_socket_path()).expect("clean EOF");
         assert!(
             writer.is_empty(),
             "no frame should be written on empty stdin"
         );
+    }
+
+    /// Full end-to-end: mock bridge server in a temp dir, real
+    /// run_loop reading from a Cursor, real forwarding over Unix
+    /// socket, mock server returns a canned response, run_loop
+    /// writes the translated HostResponse to its writer.
+    #[test]
+    fn run_loop_forwards_list_matching_items_through_mock_bridge_server() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sock_path = dir.path().join("mock.sock");
+        let listener = UnixListener::bind(&sock_path).expect("bind");
+
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut buf = [0u8; 1024];
+            let n = stream.read(&mut buf).expect("read");
+            let line = std::str::from_utf8(&buf[..n])
+                .expect("utf8")
+                .trim_end_matches('\n');
+            let request: BridgeRequest = serde_json::from_str(line).expect("decode");
+            let response = BridgeResponse {
+                request_id: request.request_id.clone(),
+                payload: BridgeResponsePayload::ListMatchingItems {
+                    items: vec![unovault_native_host::bridge_client::BridgeItemRef {
+                        id: "item-1".into(),
+                        title: "GitHub".into(),
+                        username: Some("james".into()),
+                    }],
+                },
+            };
+            let body = serde_json::to_vec(&response).expect("encode");
+            stream.write_all(&body).expect("write");
+            stream.write_all(b"\n").expect("newline");
+            stream.flush().expect("flush");
+        });
+
+        let response = round_trip_with_socket(
+            HostRequest {
+                request_id: "e2e-1".into(),
+                payload: HostRequestPayload::ListMatchingItems {
+                    origin: "https://github.com".into(),
+                },
+            },
+            &sock_path,
+        );
+        server.join().expect("server");
+
+        match response.payload {
+            HostResponsePayload::ListMatchingItems { items } => {
+                assert_eq!(items.len(), 1);
+                assert_eq!(items[0].id, "item-1");
+                assert_eq!(items[0].title, "GitHub");
+            }
+            other => panic!("expected ListMatchingItems, got {other:?}"),
+        }
     }
 }
