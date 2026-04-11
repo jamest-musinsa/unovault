@@ -1,0 +1,59 @@
+{
+  "manifest_version": 3,
+  "name": "unovault",
+  "short_name": "unovault",
+  "version": "0.0.1",
+  "description": "Password manager and passkey provider backed by your local unovault desktop app.",
+  "author": "James <james@unovault.app>",
+  "minimum_chrome_version": "114",
+
+  "action": {
+    "default_title": "unovault",
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+
+  "background": {
+    "service_worker": "dist/background.js",
+    "type": "module"
+  },
+
+  "content_scripts": [
+    {
+      "matches": ["https://*/*"],
+      "js": ["dist/content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+
+  "permissions": [
+    "activeTab",
+    "nativeMessaging",
+    "storage"
+  ],
+
+  "host_permissions": ["https://*/*"],
+
+  "commands": {
+    "fill-from-unovault": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+L",
+        "mac": "Command+Shift+L"
+      },
+      "description": "Fill credentials from unovault"
+    }
+  }
+}

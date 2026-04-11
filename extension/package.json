@@ -1,0 +1,17 @@
+{
+  "name": "unovault-extension",
+  "private": true,
+  "version": "0.0.1",
+  "description": "Chrome extension for unovault — Manifest V3 + native messaging host bridge",
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite build --watch",
+    "type-check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.270",
+    "typescript": "^5.6.0",
+    "vite": "^5.4.0"
+  }
+}

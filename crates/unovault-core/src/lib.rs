@@ -40,6 +40,7 @@ pub mod event;
 pub mod format;
 pub mod install_id;
 pub mod ipc;
+pub mod recovery;
 pub mod secret;
 pub mod sync;
 pub mod vault;
@@ -56,6 +57,7 @@ pub use event::{
 pub use format::{VaultManifest, VaultPaths};
 pub use install_id::{InstallId, InstallIdStore};
 pub use ipc::{IpcSafe, IpcString, ItemKindTag, ItemMetadata};
+pub use recovery::RecoveryPhrase;
 pub use secret::Secret;
 pub use vault::{fold_events, ItemState, Vault};
 
@@ -64,7 +66,17 @@ pub use vault::{fold_events, ItemState, Vault};
 /// Bumped when the chunk encoding, manifest layout, or Event schema changes in
 /// a way that is not backward-compatible. Minor schema additions that older
 /// readers can ignore do not bump this.
-pub const FORMAT_VERSION: u16 = 1;
+///
+/// # v2 — weeks 16-17
+///
+/// Introduces the dual-wrap key hierarchy: the manifest stores a
+/// random 32-byte master key wrapped under a password-derived KEK,
+/// and optionally a second copy wrapped under a BIP39 recovery phrase
+/// KEK. Rotation flows (`Vault::change_password`, `rotate_recovery`)
+/// operate on the wraps only and never re-encrypt chunks. v1 vaults
+/// are **not** readable by this build — there were no v1 vaults in
+/// the wild, so the migration path is "create a fresh v2 vault."
+pub const FORMAT_VERSION: u16 = 2;
 
 /// Semantic version of the `unovault-core` crate. Distinct from the on-disk
 /// format version — the same format can be read by many crate versions.

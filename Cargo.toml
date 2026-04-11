@@ -6,6 +6,8 @@ members = [
     "crates/unovault-ffi",
     "crates/unovault-import",
     "crates/unovault-macros",
+    "crates/unovault-native-host",
+    "crates/unovault-passkey",
     "crates/uniffi-bindgen",
 ]
 
@@ -73,6 +75,15 @@ tauri-build = { version = "2", features = [] }
 # Importer: 1Password 1pux is a ZIP archive, KeePass is XML
 zip = { version = "2", default-features = false, features = ["deflate"] }
 quick-xml = { version = "0.37", features = ["serialize"] }
+
+# Recovery phrase (BIP39 24-word mnemonic). `zeroize` feature wipes the
+# entropy buffer on drop; `std` pulls in the English word list.
+bip39 = { version = "2", default-features = false, features = ["std", "zeroize"] }
+
+# Software passkey authenticator: ECDSA P-256 for credential operations.
+# The `pem` feature is off — we serialize keys as raw bytes into the
+# vault, not PEM, so there's no need for the file-format helpers.
+p256 = { version = "0.13", default-features = false, features = ["ecdsa", "std"] }
 
 # Testing
 proptest = "1.5"

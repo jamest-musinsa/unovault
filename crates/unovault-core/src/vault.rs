@@ -52,12 +52,14 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::crypto::{self, DerivedKeys, KdfParams, SALT_LEN};
+use crate::crypto::{self, DerivedKeys, KdfParams, KEY_LEN, SALT_LEN};
 use crate::event::{sort_events, Event, FieldKey, FieldValue, ItemId, ItemKind, ItemSnapshot, Op};
 use crate::format::{
-    create_bundle, load_manifest, max_counter_for_install, read_all_events, write_chunk, VaultPaths,
+    create_bundle, load_manifest, max_counter_for_install, read_all_events, write_chunk,
+    NewManifestInputs, RecoverySlot, VaultPaths,
 };
 use crate::install_id::InstallId;
+use crate::recovery::RecoveryPhrase;
 use crate::secret::Secret;
 use crate::{BugInUnovaultError, UserActionableError, VaultError};
 
@@ -213,6 +215,13 @@ pub fn fold_events(events: &[Event]) -> HashMap<ItemId, ItemState> {
 /// append buffer for unsaved changes.
 pub struct Vault {
     paths: VaultPaths,
+    /// The 32-byte master key. Kept in memory because password/recovery
+    /// rotation needs to re-wrap it under a new KEK without asking the
+    /// user to re-derive the sub-keys. Zeroizes on drop via `Secret`.
+    master: Secret<[u8; KEY_LEN]>,
+    /// Sub-keys (encryption + MAC) derived from the master via HKDF.
+    /// Held separately so chunk encrypt/decrypt and manifest MAC don't
+    /// re-run HKDF on every call.
     keys: Secret<DerivedKeys>,
     install: InstallId,
     items: HashMap<ItemId, ItemState>,
@@ -229,32 +238,35 @@ pub struct Vault {
 }
 
 impl Vault {
-    /// Create a fresh vault at `bundle_path`.
+    /// Create a fresh vault at `bundle_path` with only a master password.
+    /// No recovery phrase is generated; to add one later call
+    /// [`Vault::enable_recovery`].
     ///
-    /// Generates a random salt, derives keys, writes the manifest, and
-    /// creates the empty chunks directory. Returns an unlocked in-memory
-    /// vault with zero items and an empty pending queue.
+    /// Generates a random master key, wraps it under a password-derived
+    /// KEK, writes the manifest, and creates the empty chunks directory.
+    /// Returns an unlocked in-memory vault with zero items.
     pub fn create(
         bundle_path: impl AsRef<Path>,
         password: Secret<String>,
         install: InstallId,
     ) -> Result<Self, VaultError> {
-        let salt = crypto::generate_salt()?;
-        let params = KdfParams::V1;
-        let master = crypto::derive_master_key(&password, &salt, &params)?;
-        let keys = crypto::derive_sub_keys(&master)?;
+        Self::create_inner(bundle_path, password, None, install, KdfParams::V1)
+    }
 
-        let paths = create_bundle(bundle_path.as_ref(), &keys, &salt, params)?;
-
-        Ok(Self {
-            paths,
-            keys,
-            install,
-            items: HashMap::new(),
-            pending: Vec::new(),
-            next_chunk_counter: 1,
-            next_lamport: 1,
-        })
+    /// Create a fresh vault with both a master password **and** a BIP39
+    /// 24-word recovery phrase. The phrase is returned once — the caller
+    /// MUST show it to the user and warn them to store it securely; it is
+    /// the only way to recover the vault if they forget the password.
+    /// The phrase is not stored anywhere on disk.
+    pub fn create_with_recovery(
+        bundle_path: impl AsRef<Path>,
+        password: Secret<String>,
+        install: InstallId,
+    ) -> Result<(Self, RecoveryPhrase), VaultError> {
+        let phrase = RecoveryPhrase::generate()?;
+        let vault =
+            Self::create_inner(bundle_path, password, Some(&phrase), install, KdfParams::V1)?;
+        Ok((vault, phrase))
     }
 
     /// Like [`Vault::create`], but uses cheap test argon2id params so the
@@ -266,14 +278,83 @@ impl Vault {
         password: Secret<String>,
         install: InstallId,
     ) -> Result<Self, VaultError> {
-        let salt = crypto::generate_salt()?;
-        let params = KdfParams::TEST_ONLY;
-        let master = crypto::derive_master_key(&password, &salt, &params)?;
+        Self::create_inner(bundle_path, password, None, install, KdfParams::TEST_ONLY)
+    }
+
+    /// Like [`Vault::create_with_recovery`], but uses cheap test argon2id
+    /// params so the test suite finishes in milliseconds.
+    #[cfg(test)]
+    pub fn create_with_recovery_for_tests(
+        bundle_path: impl AsRef<Path>,
+        password: Secret<String>,
+        install: InstallId,
+    ) -> Result<(Self, RecoveryPhrase), VaultError> {
+        let phrase = RecoveryPhrase::generate()?;
+        let vault = Self::create_inner(
+            bundle_path,
+            password,
+            Some(&phrase),
+            install,
+            KdfParams::TEST_ONLY,
+        )?;
+        Ok((vault, phrase))
+    }
+
+    /// Shared implementation of create + create_with_recovery. Generates
+    /// a random master key, wraps under the password KEK (and optionally
+    /// the recovery KEK), and writes the manifest.
+    fn create_inner(
+        bundle_path: impl AsRef<Path>,
+        password: Secret<String>,
+        recovery: Option<&RecoveryPhrase>,
+        install: InstallId,
+        kdf: KdfParams,
+    ) -> Result<Self, VaultError> {
+        // Generate all key material up front so the create_bundle call
+        // is the only fallible I/O step and a crash between "wrap" and
+        // "write" still leaves the filesystem untouched.
+        let master = crypto::generate_master_key()?;
+
+        let password_salt = crypto::generate_salt()?;
+        let password_kek = crypto::derive_kek(&password, &password_salt, &kdf)?;
+
+        // Recovery slot, if requested. Uses an independent salt so the
+        // two KEKs are cryptographically unrelated even though they both
+        // wrap the same master.
+        let (recovery_salt, recovery_kek) = match recovery {
+            Some(phrase) => {
+                let salt = crypto::generate_salt()?;
+                let kek = crypto::derive_kek(phrase.as_secret_string(), &salt, &kdf)?;
+                (Some(salt), Some(kek))
+            }
+            None => (None, None),
+        };
+
+        let recovery_slot = match (&recovery_salt, &recovery_kek) {
+            (Some(salt), Some(kek)) => Some(RecoverySlot {
+                recovery_kek: kek,
+                recovery_salt: salt,
+                recovery_kdf: kdf,
+            }),
+            _ => None,
+        };
+
+        let inputs = NewManifestInputs {
+            master: &master,
+            password_kek: &password_kek,
+            password_salt: &password_salt,
+            password_kdf: kdf,
+            recovery: recovery_slot,
+        };
+
+        let paths = create_bundle(bundle_path.as_ref(), inputs)?;
+
         let keys = crypto::derive_sub_keys(&master)?;
-        let paths = create_bundle(bundle_path.as_ref(), &keys, &salt, params)?;
+
         Ok(Self {
             paths,
             keys,
+            master,
             install,
             items: HashMap::new(),
             pending: Vec::new(),
@@ -292,52 +373,86 @@ impl Vault {
     ///    errors fire before the password is even touched, so they
     ///    cleanly distinguish tamper from wrong-password.
     /// 2. Reject unsupported format versions.
-    /// 3. Derive the master key from `password` using the manifest's KDF
-    ///    params and salt. This is the slow step (argon2id).
-    /// 4. Derive the encryption + MAC sub-keys from the master.
-    /// 5. Verify the manifest MAC. A mismatch at this step can be either
-    ///    a wrong password OR a tampered manifest whose JSON still parses —
-    ///    we surface it as [`UserActionableError::WrongPassword`] because
-    ///    that is the far more common cause, but the manifest parse path
-    ///    above catches every case where an attacker mangled the bytes
-    ///    enough to change the structure. A sophisticated attacker who
-    ///    flips bits without breaking the JSON shape still triggers this
-    ///    branch; the user sees "wrong password" and retries. Not perfect;
-    ///    a dedicated KCV (key check value) would distinguish them, and
-    ///    that is a TODO on the v1.1 roadmap (design doc, Reviewer
-    ///    Concerns).
-    /// 6. Read every chunk, decrypt, sort, fold into item state.
-    /// 7. Seed the next-chunk counter from the highest counter already on
-    ///    disk for this install.
+    /// 3. Derive the password KEK from `password` and the manifest's
+    ///    password salt + KDF params. This is the slow step (argon2id).
+    /// 4. Unwrap the stored master key with the KEK. An AEAD failure
+    ///    here is what surfaces as `WrongPassword`.
+    /// 5. Derive the encryption + MAC sub-keys from the master.
+    /// 6. Verify the manifest MAC over the canonical body. Mismatch
+    ///    here means a field outside the wrapped-key blob was tampered.
+    /// 7. Read every chunk, decrypt, sort, fold into item state.
+    /// 8. Seed the next-chunk counter from the highest counter already
+    ///    on disk for this install.
     pub fn unlock(
         bundle_path: impl AsRef<Path>,
         password: Secret<String>,
         install: InstallId,
     ) -> Result<Self, VaultError> {
         let bundle = bundle_path.as_ref();
-        // Step 1: load. Manifest parse errors surface here as
-        // CorruptedManifest BEFORE we touch the password, so a file the
-        // attacker mangled enough to break JSON shape is distinguishable
-        // from wrong-password.
         let manifest = load_manifest(bundle)?;
-        let salt: [u8; SALT_LEN] = manifest.salt()?;
+        let salt = manifest.password_salt()?;
+        let wrapped = manifest.password_wrapped_key()?;
 
-        let master = crypto::derive_master_key(&password, &salt, &manifest.kdf)?;
+        let kek = crypto::derive_kek(&password, &salt, &manifest.password_kdf)?;
+        let master = crypto::unwrap_master_key(&kek, &wrapped)?;
         let keys = crypto::derive_sub_keys(&master)?;
 
-        // Step 5: MAC verification.
-        //
-        // Only two things can cause this to fail: (a) the password was wrong,
-        // so the derived MAC key is wrong; (b) an attacker rewrote the
-        // manifest body while preserving JSON shape. (a) is vastly more
-        // common, so we surface WrongPassword. A dedicated key-check value
-        // stored separately would distinguish the two; adding one is a
-        // planned v1.1 improvement.
         if manifest.verify(&keys).is_err() {
-            return Err(UserActionableError::WrongPassword.into());
+            return Err(UserActionableError::CorruptedManifest.into());
         }
 
         let paths = VaultPaths::for_bundle(bundle);
+        Self::assemble_from_disk(paths, master, keys, install)
+    }
+
+    /// Unlock an existing vault using its BIP39 recovery phrase instead
+    /// of the master password. The vault must have been created with
+    /// recovery enabled; otherwise this returns
+    /// [`UserActionableError::InvalidRecoveryPhrase`] (the recovery
+    /// slot is empty, so there is nothing to unwrap).
+    ///
+    /// A correct phrase that doesn't match the stored wrap (e.g. the
+    /// wrong vault) surfaces as `WrongPassword` — the two are
+    /// cryptographically symmetric and the UI shows the right message
+    /// based on which entry point the user took.
+    pub fn unlock_with_recovery(
+        bundle_path: impl AsRef<Path>,
+        phrase: &RecoveryPhrase,
+        install: InstallId,
+    ) -> Result<Self, VaultError> {
+        let bundle = bundle_path.as_ref();
+        let manifest = load_manifest(bundle)?;
+
+        let recovery_salt = manifest
+            .recovery_salt()?
+            .ok_or(UserActionableError::InvalidRecoveryPhrase)?;
+        let wrapped = manifest
+            .recovery_wrapped_key()?
+            .ok_or(UserActionableError::InvalidRecoveryPhrase)?;
+        let kdf = manifest
+            .recovery_kdf
+            .ok_or(UserActionableError::InvalidRecoveryPhrase)?;
+
+        let kek = crypto::derive_kek(phrase.as_secret_string(), &recovery_salt, &kdf)?;
+        let master = crypto::unwrap_master_key(&kek, &wrapped)?;
+        let keys = crypto::derive_sub_keys(&master)?;
+
+        if manifest.verify(&keys).is_err() {
+            return Err(UserActionableError::CorruptedManifest.into());
+        }
+
+        let paths = VaultPaths::for_bundle(bundle);
+        Self::assemble_from_disk(paths, master, keys, install)
+    }
+
+    /// Shared tail of unlock / unlock_with_recovery: read chunks,
+    /// fold events, compute counters, build the Vault.
+    fn assemble_from_disk(
+        paths: VaultPaths,
+        master: Secret<[u8; KEY_LEN]>,
+        keys: Secret<DerivedKeys>,
+        install: InstallId,
+    ) -> Result<Self, VaultError> {
         let mut events = read_all_events(&paths, &keys)?;
         sort_events(&mut events);
         let items = fold_events(&events);
@@ -352,6 +467,7 @@ impl Vault {
 
         Ok(Self {
             paths,
+            master,
             keys,
             install,
             items,
@@ -363,6 +479,118 @@ impl Vault {
                 .checked_add(1)
                 .ok_or(BugInUnovaultError::ChunkCounterOverflow)?,
         })
+    }
+
+    /// Change the master password on an unlocked vault. Re-derives a
+    /// new password KEK from `new_password`, re-wraps the existing
+    /// master key, and rewrites `manifest.json` atomically. If the
+    /// vault has a recovery slot it is preserved unchanged.
+    ///
+    /// The chunks directory is untouched — changing the password does
+    /// NOT re-encrypt any existing chunk files. This is what makes
+    /// rotation O(1) regardless of vault size.
+    pub fn change_password(&mut self, new_password: Secret<String>) -> Result<(), VaultError> {
+        let old_manifest = load_manifest(&self.paths.bundle)?;
+        let kdf = old_manifest.password_kdf;
+
+        let password_salt = crypto::generate_salt()?;
+        let password_kek = crypto::derive_kek(&new_password, &password_salt, &kdf)?;
+
+        let inputs = NewManifestInputs {
+            master: &self.master,
+            password_kek: &password_kek,
+            password_salt: &password_salt,
+            password_kdf: kdf,
+            // change_password always drops the recovery slot from the
+            // NewManifestInputs path — we splice the old slot back in
+            // below if it existed.
+            recovery: None,
+        };
+
+        let mut manifest = crate::format::VaultManifest::new(inputs)?;
+
+        if old_manifest.has_recovery() {
+            manifest.recovery_kdf = old_manifest.recovery_kdf;
+            manifest.recovery_salt_b64 = old_manifest.recovery_salt_b64.clone();
+            manifest.recovery_wrapped_key_b64 = old_manifest.recovery_wrapped_key_b64.clone();
+
+            // Re-MAC over the canonical body with the recovery slot
+            // restored.
+            let sub_keys = crypto::derive_sub_keys(&self.master)?;
+            manifest.manifest_mac_b64 = String::new();
+            let canonical = serde_json::to_vec_pretty(&manifest)
+                .map_err(|_| BugInUnovaultError::SelfSerializationFailure)?;
+            let mac = crypto::compute_mac(&sub_keys, &canonical)?;
+            manifest.manifest_mac_b64 = crypto::mac_to_base64(&mac);
+        }
+
+        crate::format::write_manifest_public(&self.paths, &manifest)
+    }
+
+    /// Add a fresh recovery phrase or rotate the existing one.
+    /// Returns the new BIP39 phrase. Any prior recovery slot is
+    /// replaced by this call.
+    ///
+    /// The master password slot is unchanged.
+    pub fn rotate_recovery(&mut self) -> Result<RecoveryPhrase, VaultError> {
+        let old_manifest = load_manifest(&self.paths.bundle)?;
+        let kdf = old_manifest.password_kdf;
+
+        let phrase = RecoveryPhrase::generate()?;
+        let recovery_salt = crypto::generate_salt()?;
+        let recovery_kek = crypto::derive_kek(phrase.as_secret_string(), &recovery_salt, &kdf)?;
+
+        // Decode the existing password-wrapped key so we can write it
+        // back into the new manifest unchanged — we don't have the
+        // password here, so we can't re-wrap.
+        let old_password_wrapped = old_manifest.password_wrapped_key_b64.clone();
+        let old_password_salt = old_manifest.password_salt_b64.clone();
+        let old_password_kdf = old_manifest.password_kdf;
+
+        // Build a manifest from scratch with the new recovery slot but
+        // copy the password slot verbatim (the helper wants a
+        // password_kek even though we won't use its wrap).
+        let throwaway_kek = Secret::new([0u8; KEY_LEN]);
+        let mut manifest = crate::format::VaultManifest::new(NewManifestInputs {
+            master: &self.master,
+            password_kek: &throwaway_kek,
+            password_salt: &[0u8; SALT_LEN],
+            password_kdf: old_password_kdf,
+            recovery: Some(RecoverySlot {
+                recovery_kek: &recovery_kek,
+                recovery_salt: &recovery_salt,
+                recovery_kdf: kdf,
+            }),
+        })?;
+
+        // Overwrite the password slot with the original wrap + salt.
+        manifest.password_wrapped_key_b64 = old_password_wrapped;
+        manifest.password_salt_b64 = old_password_salt;
+
+        // Re-MAC over the canonical body after the splice.
+        let sub_keys = crypto::derive_sub_keys(&self.master)?;
+        manifest.manifest_mac_b64 = String::new();
+        let canonical = serde_json::to_vec_pretty(&manifest)
+            .map_err(|_| BugInUnovaultError::SelfSerializationFailure)?;
+        let mac = crypto::compute_mac(&sub_keys, &canonical)?;
+        manifest.manifest_mac_b64 = crypto::mac_to_base64(&mac);
+
+        crate::format::write_manifest_public(&self.paths, &manifest)?;
+        Ok(phrase)
+    }
+
+    /// Add a recovery slot to a vault that was created without one.
+    /// Returns the fresh phrase. This is just [`Vault::rotate_recovery`]
+    /// with a guard that refuses to clobber an existing slot.
+    pub fn enable_recovery(&mut self) -> Result<RecoveryPhrase, VaultError> {
+        let manifest = load_manifest(&self.paths.bundle)?;
+        if manifest.has_recovery() {
+            return Err(BugInUnovaultError::InvariantViolation(
+                "enable_recovery called on a vault that already has a recovery slot",
+            )
+            .into());
+        }
+        self.rotate_recovery()
     }
 
     /// Add a new item to the vault. Returns its fresh ID.
@@ -1027,5 +1255,234 @@ mod tests {
             !state.contains_key(&id),
             "tombstoned item must not appear in folded state"
         );
+    }
+
+    // =========================================================================
+    // Week 17 — recovery kit + password rotation tests
+    // =========================================================================
+
+    #[test]
+    fn create_with_recovery_returns_a_24_word_phrase_and_opens() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("recovery.unovault");
+        let install = InstallId::new();
+        let (mut vault, phrase) = Vault::create_with_recovery_for_tests(
+            &path,
+            Secret::new(String::from("hunter2")),
+            install,
+        )
+        .expect("create with recovery");
+        assert_eq!(phrase.word_count(), 24);
+        vault.save().expect("save empty");
+    }
+
+    #[test]
+    fn recovery_phrase_unlocks_the_vault_when_password_unknown() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("recovery-unlock.unovault");
+        let install = InstallId::new();
+
+        let (phrase, original_id) = {
+            let (mut vault, phrase) = Vault::create_with_recovery_for_tests(
+                &path,
+                Secret::new(String::from("the-password-we-will-forget")),
+                install,
+            )
+            .expect("create");
+            let id = vault.add_item(snap("GitHub")).expect("add");
+            vault
+                .set_field(
+                    id,
+                    FieldKey::Password,
+                    FieldValue::Bytes(b"gh-secret".to_vec()),
+                )
+                .expect("set pw");
+            vault.save().expect("save");
+            (phrase, id)
+        };
+
+        // Unlock via the recovery phrase instead of the forgotten
+        // password. The item should come back intact.
+        let recovered =
+            Vault::unlock_with_recovery(&path, &phrase, install).expect("recovery unlock");
+        let item = recovered.get(&original_id).expect("item");
+        assert_eq!(item.title, "GitHub");
+        assert_eq!(item.password.as_deref(), Some(b"gh-secret".as_slice()));
+    }
+
+    #[test]
+    fn recovery_unlock_rejects_wrong_phrase_as_wrong_password() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("wrong-phrase.unovault");
+        let install = InstallId::new();
+        let (_vault, _phrase) = Vault::create_with_recovery_for_tests(
+            &path,
+            Secret::new(String::from("hunter2")),
+            install,
+        )
+        .expect("create");
+
+        let other = crate::recovery::RecoveryPhrase::generate().expect("other phrase");
+        match Vault::unlock_with_recovery(&path, &other, install) {
+            Err(VaultError::UserActionable(UserActionableError::WrongPassword)) => {}
+            other_err => panic!("expected WrongPassword, got {other_err:?}"),
+        }
+    }
+
+    #[test]
+    fn recovery_unlock_on_vault_without_recovery_errors() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("no-recovery.unovault");
+        let install = InstallId::new();
+        let _vault = Vault::create_for_tests(&path, Secret::new(String::from("hunter2")), install)
+            .expect("create");
+
+        let phrase = crate::recovery::RecoveryPhrase::generate().expect("phrase");
+        match Vault::unlock_with_recovery(&path, &phrase, install) {
+            Err(VaultError::UserActionable(UserActionableError::InvalidRecoveryPhrase)) => {}
+            other => panic!("expected InvalidRecoveryPhrase, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn change_password_lets_the_new_password_unlock() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("rotate-pw.unovault");
+        let install = InstallId::new();
+
+        {
+            let mut vault =
+                Vault::create_for_tests(&path, Secret::new(String::from("old-password")), install)
+                    .expect("create");
+            vault
+                .change_password(Secret::new(String::from("new-password")))
+                .expect("change password");
+        }
+
+        // New password works.
+        let ok = Vault::unlock(&path, Secret::new(String::from("new-password")), install);
+        assert!(ok.is_ok(), "new password must unlock: {ok:?}");
+
+        // Old password no longer works.
+        match Vault::unlock(&path, Secret::new(String::from("old-password")), install) {
+            Err(VaultError::UserActionable(UserActionableError::WrongPassword)) => {}
+            other => panic!("expected WrongPassword, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn change_password_preserves_the_existing_recovery_slot() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("rotate-keep-recovery.unovault");
+        let install = InstallId::new();
+
+        let phrase = {
+            let (mut vault, phrase) = Vault::create_with_recovery_for_tests(
+                &path,
+                Secret::new(String::from("old-password")),
+                install,
+            )
+            .expect("create");
+            vault
+                .change_password(Secret::new(String::from("new-password")))
+                .expect("change password");
+            phrase
+        };
+
+        // The recovery phrase must still work after the rotation.
+        let recovered = Vault::unlock_with_recovery(&path, &phrase, install);
+        assert!(
+            recovered.is_ok(),
+            "recovery slot should survive password change: {recovered:?}"
+        );
+    }
+
+    #[test]
+    fn rotate_recovery_replaces_the_phrase() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("rotate-recovery.unovault");
+        let install = InstallId::new();
+
+        let (old_phrase, new_phrase) = {
+            let (mut vault, old_phrase) = Vault::create_with_recovery_for_tests(
+                &path,
+                Secret::new(String::from("hunter2")),
+                install,
+            )
+            .expect("create");
+            let new_phrase = vault.rotate_recovery().expect("rotate recovery");
+            (old_phrase, new_phrase)
+        };
+
+        assert_ne!(old_phrase.expose(), new_phrase.expose());
+
+        // Old phrase no longer works.
+        match Vault::unlock_with_recovery(&path, &old_phrase, install) {
+            Err(VaultError::UserActionable(UserActionableError::WrongPassword)) => {}
+            other => panic!("expected WrongPassword on old phrase, got {other:?}"),
+        }
+
+        // New phrase works.
+        let ok = Vault::unlock_with_recovery(&path, &new_phrase, install);
+        assert!(ok.is_ok(), "new recovery phrase must unlock: {ok:?}");
+    }
+
+    #[test]
+    fn rotate_recovery_preserves_the_password_slot() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("rotate-recovery-keeps-pw.unovault");
+        let install = InstallId::new();
+
+        {
+            let (mut vault, _phrase) = Vault::create_with_recovery_for_tests(
+                &path,
+                Secret::new(String::from("hunter2")),
+                install,
+            )
+            .expect("create");
+            let _new_phrase = vault.rotate_recovery().expect("rotate");
+        }
+
+        let ok = Vault::unlock(&path, Secret::new(String::from("hunter2")), install);
+        assert!(
+            ok.is_ok(),
+            "password slot must survive recovery rotation: {ok:?}"
+        );
+    }
+
+    #[test]
+    fn enable_recovery_on_a_vault_without_one_adds_a_slot() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("enable-recovery.unovault");
+        let install = InstallId::new();
+
+        let phrase = {
+            let mut vault =
+                Vault::create_for_tests(&path, Secret::new(String::from("hunter2")), install)
+                    .expect("create");
+            vault.enable_recovery().expect("enable")
+        };
+
+        let ok = Vault::unlock_with_recovery(&path, &phrase, install);
+        assert!(ok.is_ok(), "newly-added recovery must unlock: {ok:?}");
+    }
+
+    #[test]
+    fn enable_recovery_refuses_when_slot_already_exists() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("double-enable.unovault");
+        let install = InstallId::new();
+
+        let (mut vault, _phrase) = Vault::create_with_recovery_for_tests(
+            &path,
+            Secret::new(String::from("hunter2")),
+            install,
+        )
+        .expect("create");
+
+        match vault.enable_recovery() {
+            Err(VaultError::BugInUnovault(_)) => {}
+            other => panic!("expected BugInUnovault, got {other:?}"),
+        }
     }
 }

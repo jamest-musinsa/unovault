@@ -71,6 +71,11 @@ pub const KEY_LEN: usize = 32;
 /// Length of the HMAC-SHA256 output used for manifest integrity.
 pub const MAC_LEN: usize = 32;
 
+/// Length of a wrapped master key on disk: `nonce || ciphertext || tag`
+/// where the ciphertext body has the same length as the 32-byte master
+/// key. `24 + 32 + 16 = 72`.
+pub const WRAPPED_KEY_LEN: usize = NONCE_LEN + KEY_LEN + TAG_LEN;
+
 /// argon2id tuning parameters. V1 targets ~500ms on a modern M-series Mac
 /// and ~1-1.5s on an M1 Air. The threat model in the design doc justifies
 /// these numbers.
@@ -153,13 +158,35 @@ pub fn generate_nonce() -> Result<[u8; NONCE_LEN], VaultError> {
     Ok(nonce)
 }
 
-/// Derive a 32-byte master key from a password + salt using argon2id.
+/// Generate a fresh random 32-byte master key for a brand-new vault.
+///
+/// In format v2 the master key is not deterministically derived from the
+/// password. Instead we generate random bytes here, wrap them under a
+/// password-derived KEK via [`wrap_master_key`], and store the wrapped
+/// form in the manifest. This is what lets the user change their master
+/// password without re-encrypting every chunk — only the wrap changes.
+pub fn generate_master_key() -> Result<Secret<[u8; KEY_LEN]>, VaultError> {
+    let mut key = [0u8; KEY_LEN];
+    OsRng.try_fill_bytes(&mut key).map_err(|_| {
+        BugInUnovaultError::InvariantViolation("OS RNG failed during master key generation")
+    })?;
+    Ok(Secret::new(key))
+}
+
+/// Derive a 32-byte key-encryption-key (KEK) from a secret string + salt
+/// using argon2id.
 ///
 /// The caller supplies a borrowed `Secret<String>` to make exposure at the
-/// call site visible in a grep. The returned master key is also wrapped in
+/// call site visible in a grep. The returned KEK is also wrapped in
 /// `Secret` so it zeroizes on drop.
-pub fn derive_master_key(
-    password: &Secret<String>,
+///
+/// Used for both the master password (`secret = the password`) and the
+/// BIP39 recovery phrase (`secret = the 24 words space-joined`). The
+/// caller passes a different salt for each so the two KEKs are
+/// cryptographically independent even if someone accidentally reused the
+/// same string for both.
+pub fn derive_kek(
+    secret: &Secret<String>,
     salt: &[u8; SALT_LEN],
     params: &KdfParams,
 ) -> Result<Secret<[u8; KEY_LEN]>, VaultError> {
@@ -175,10 +202,88 @@ pub fn derive_master_key(
 
     let mut output = [0u8; KEY_LEN];
     argon
-        .hash_password_into(password.expose().as_bytes(), salt, &mut output)
+        .hash_password_into(secret.expose().as_bytes(), salt, &mut output)
         .map_err(|_| BugInUnovaultError::InvariantViolation("argon2 hash_password_into failed"))?;
 
     Ok(Secret::new(output))
+}
+
+/// Wrap a 32-byte master key under a 32-byte KEK using XChaCha20-Poly1305.
+///
+/// Output layout: `[nonce (24 bytes)] [ciphertext (32 bytes)] [tag (16 bytes)]`.
+/// Exactly [`WRAPPED_KEY_LEN`] bytes.
+///
+/// The nonce is random per call, which makes rotating the password
+/// (re-wrap under a new KEK) trivially unlinkable from the prior wrap.
+pub fn wrap_master_key(
+    kek: &Secret<[u8; KEY_LEN]>,
+    master: &Secret<[u8; KEY_LEN]>,
+) -> Result<[u8; WRAPPED_KEY_LEN], VaultError> {
+    let cipher = XChaCha20Poly1305::new(kek.expose().as_ref().into());
+    let nonce_bytes = generate_nonce()?;
+    let nonce = XNonce::from_slice(&nonce_bytes);
+
+    let ciphertext = cipher
+        .encrypt(nonce, master.expose().as_ref())
+        .map_err(|_| BugInUnovaultError::InvariantViolation("AEAD encrypt failed"))?;
+
+    // AEAD output is plaintext_len + tag. Because master is KEY_LEN bytes
+    // and the tag is TAG_LEN bytes, the total is KEY_LEN + TAG_LEN.
+    let mut out = [0u8; WRAPPED_KEY_LEN];
+    out[..NONCE_LEN].copy_from_slice(&nonce_bytes);
+    out[NONCE_LEN..].copy_from_slice(&ciphertext);
+    Ok(out)
+}
+
+/// Unwrap a master key previously wrapped by [`wrap_master_key`].
+///
+/// A MAC failure (wrong KEK, tampered wrapper) surfaces as
+/// [`UserActionableError::WrongPassword`] so the unlock path can display
+/// the "wrong password" copy directly. The caller distinguishes recovery
+/// vs password unlock and surfaces the right wording itself; the error
+/// variant is the same because both trees are cryptographically symmetric
+/// — either the KEK was right or it wasn't.
+pub fn unwrap_master_key(
+    kek: &Secret<[u8; KEY_LEN]>,
+    wrapped: &[u8; WRAPPED_KEY_LEN],
+) -> Result<Secret<[u8; KEY_LEN]>, VaultError> {
+    let (nonce_bytes, ciphertext) = wrapped.split_at(NONCE_LEN);
+    let nonce = XNonce::from_slice(nonce_bytes);
+
+    let cipher = XChaCha20Poly1305::new(kek.expose().as_ref().into());
+    let plain = cipher
+        .decrypt(nonce, ciphertext)
+        .map_err(|_| UserActionableError::WrongPassword)?;
+
+    if plain.len() != KEY_LEN {
+        return Err(BugInUnovaultError::InvariantViolation(
+            "unwrap_master_key produced wrong length output",
+        )
+        .into());
+    }
+    let mut master = [0u8; KEY_LEN];
+    master.copy_from_slice(&plain);
+    Ok(Secret::new(master))
+}
+
+/// Encode a wrapped master key as unpadded URL-safe base64 for JSON
+/// storage in the manifest.
+pub fn wrapped_key_to_base64(wrapped: &[u8; WRAPPED_KEY_LEN]) -> String {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(wrapped)
+}
+
+/// Decode a wrapped master key from the manifest. Length-checks so a
+/// truncated or padded blob fails as `CorruptedManifest`.
+pub fn wrapped_key_from_base64(s: &str) -> Result<[u8; WRAPPED_KEY_LEN], VaultError> {
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(s)
+        .map_err(|_| UserActionableError::CorruptedManifest)?;
+    if bytes.len() != WRAPPED_KEY_LEN {
+        return Err(UserActionableError::CorruptedManifest.into());
+    }
+    let mut out = [0u8; WRAPPED_KEY_LEN];
+    out.copy_from_slice(&bytes);
+    Ok(out)
 }
 
 /// Derive the (encryption, mac) sub-key pair from the master key via HKDF.
@@ -325,36 +430,38 @@ pub fn salt_from_base64(s: &str) -> Result<[u8; SALT_LEN], VaultError> {
 mod tests {
     use super::*;
 
-    /// Build a derived-key pair from a known password. All crypto tests use
-    /// cheap argon2id params via `KdfParams::TEST_ONLY` so the suite finishes
-    /// in milliseconds.
+    /// Build a derived-key pair from a known password. Tests that only
+    /// need "some keys" to encrypt/MAC use this. The v2 flow derives the
+    /// sub-keys from a random master; tests that want deterministic
+    /// output seed the master from the password via `derive_kek` (the
+    /// old v1 derivation) so test expectations stay stable.
     fn derive_test_keys(password: &str) -> Secret<DerivedKeys> {
         let salt = [0u8; SALT_LEN];
         let pw = Secret::new(String::from(password));
-        let master = derive_master_key(&pw, &salt, &KdfParams::TEST_ONLY)
-            .expect("derive_master_key should not fail on valid input");
+        let master = derive_kek(&pw, &salt, &KdfParams::TEST_ONLY)
+            .expect("derive_kek should not fail on valid input");
         derive_sub_keys(&master).expect("derive_sub_keys should not fail on valid input")
     }
 
     #[test]
-    fn master_key_is_deterministic_for_same_password_and_salt() {
+    fn kek_is_deterministic_for_same_secret_and_salt() {
         let pw = Secret::new(String::from("hunter2"));
         let salt = [1u8; SALT_LEN];
-        let a = derive_master_key(&pw, &salt, &KdfParams::TEST_ONLY).expect("first");
-        let b = derive_master_key(&pw, &salt, &KdfParams::TEST_ONLY).expect("second");
+        let a = derive_kek(&pw, &salt, &KdfParams::TEST_ONLY).expect("first");
+        let b = derive_kek(&pw, &salt, &KdfParams::TEST_ONLY).expect("second");
         assert_eq!(a.expose(), b.expose());
     }
 
     #[test]
-    fn different_passwords_yield_different_master_keys() {
+    fn different_passwords_yield_different_keks() {
         let salt = [1u8; SALT_LEN];
-        let a = derive_master_key(
+        let a = derive_kek(
             &Secret::new(String::from("hunter2")),
             &salt,
             &KdfParams::TEST_ONLY,
         )
         .expect("a");
-        let b = derive_master_key(
+        let b = derive_kek(
             &Secret::new(String::from("hunter3")),
             &salt,
             &KdfParams::TEST_ONLY,
@@ -364,11 +471,133 @@ mod tests {
     }
 
     #[test]
-    fn different_salts_yield_different_master_keys() {
+    fn different_salts_yield_different_keks() {
         let pw = Secret::new(String::from("hunter2"));
-        let a = derive_master_key(&pw, &[1u8; SALT_LEN], &KdfParams::TEST_ONLY).expect("a");
-        let b = derive_master_key(&pw, &[2u8; SALT_LEN], &KdfParams::TEST_ONLY).expect("b");
+        let a = derive_kek(&pw, &[1u8; SALT_LEN], &KdfParams::TEST_ONLY).expect("a");
+        let b = derive_kek(&pw, &[2u8; SALT_LEN], &KdfParams::TEST_ONLY).expect("b");
         assert_ne!(a.expose(), b.expose());
+    }
+
+    #[test]
+    fn generate_master_key_is_not_zero_and_differs_across_calls() {
+        let a = generate_master_key().expect("a");
+        let b = generate_master_key().expect("b");
+        assert_ne!(a.expose(), &[0u8; KEY_LEN]);
+        assert_ne!(a.expose(), b.expose());
+    }
+
+    #[test]
+    fn wrap_unwrap_master_key_roundtrip() {
+        let kek = derive_kek(
+            &Secret::new(String::from("hunter2")),
+            &[0u8; SALT_LEN],
+            &KdfParams::TEST_ONLY,
+        )
+        .expect("kek");
+        let master = generate_master_key().expect("master");
+
+        let wrapped = wrap_master_key(&kek, &master).expect("wrap");
+        assert_eq!(wrapped.len(), WRAPPED_KEY_LEN);
+
+        let unwrapped = unwrap_master_key(&kek, &wrapped).expect("unwrap");
+        assert_eq!(unwrapped.expose(), master.expose());
+    }
+
+    #[test]
+    fn wrap_is_not_identity_on_the_master_bytes() {
+        // The wrapped blob must not contain the master key bytes in the
+        // clear. Skip the nonce (random, could coincide) and scan the
+        // remainder for a window-match.
+        let kek = derive_kek(
+            &Secret::new(String::from("hunter2")),
+            &[0u8; SALT_LEN],
+            &KdfParams::TEST_ONLY,
+        )
+        .expect("kek");
+        let master = Secret::new([0xAAu8; KEY_LEN]);
+        let wrapped = wrap_master_key(&kek, &master).expect("wrap");
+        let body = &wrapped[NONCE_LEN..];
+        for window in body.windows(KEY_LEN) {
+            assert_ne!(window, master.expose(), "plaintext master leaked");
+        }
+    }
+
+    #[test]
+    fn wrong_kek_fails_unwrap_as_wrong_password() {
+        let good = derive_kek(
+            &Secret::new(String::from("hunter2")),
+            &[0u8; SALT_LEN],
+            &KdfParams::TEST_ONLY,
+        )
+        .expect("good");
+        let bad = derive_kek(
+            &Secret::new(String::from("hunter3")),
+            &[0u8; SALT_LEN],
+            &KdfParams::TEST_ONLY,
+        )
+        .expect("bad");
+        let master = generate_master_key().expect("master");
+        let wrapped = wrap_master_key(&good, &master).expect("wrap");
+        match unwrap_master_key(&bad, &wrapped) {
+            Err(VaultError::UserActionable(UserActionableError::WrongPassword)) => {}
+            other => panic!("expected WrongPassword, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tampered_wrapped_key_fails_unwrap_as_wrong_password() {
+        let kek = derive_kek(
+            &Secret::new(String::from("hunter2")),
+            &[0u8; SALT_LEN],
+            &KdfParams::TEST_ONLY,
+        )
+        .expect("kek");
+        let master = generate_master_key().expect("master");
+        let mut wrapped = wrap_master_key(&kek, &master).expect("wrap");
+        // Flip a bit in the ciphertext body.
+        wrapped[NONCE_LEN + 1] ^= 0x01;
+        match unwrap_master_key(&kek, &wrapped) {
+            Err(VaultError::UserActionable(UserActionableError::WrongPassword)) => {}
+            other => panic!("expected WrongPassword on tamper, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn re_wrapping_same_master_under_same_kek_changes_bytes_due_to_nonce() {
+        // Two wraps of the same master + same KEK must differ because
+        // each call draws a fresh nonce. This is how rotation works
+        // without re-encrypting the vault.
+        let kek = derive_kek(
+            &Secret::new(String::from("hunter2")),
+            &[0u8; SALT_LEN],
+            &KdfParams::TEST_ONLY,
+        )
+        .expect("kek");
+        let master = generate_master_key().expect("master");
+        let a = wrap_master_key(&kek, &master).expect("a");
+        let b = wrap_master_key(&kek, &master).expect("b");
+        assert_ne!(a, b);
+        // But both unwrap to the same master.
+        let ua = unwrap_master_key(&kek, &a).expect("ua");
+        let ub = unwrap_master_key(&kek, &b).expect("ub");
+        assert_eq!(ua.expose(), ub.expose());
+    }
+
+    #[test]
+    fn wrapped_key_base64_roundtrip() {
+        let bytes = [0x5A; WRAPPED_KEY_LEN];
+        let encoded = wrapped_key_to_base64(&bytes);
+        let decoded = wrapped_key_from_base64(&encoded).expect("decode");
+        assert_eq!(decoded, bytes);
+    }
+
+    #[test]
+    fn wrapped_key_base64_rejects_wrong_length() {
+        let short = wrapped_key_to_base64(&[0u8; WRAPPED_KEY_LEN])[..20].to_string();
+        match wrapped_key_from_base64(&short) {
+            Err(VaultError::UserActionable(UserActionableError::CorruptedManifest)) => {}
+            other => panic!("expected CorruptedManifest, got {other:?}"),
+        }
     }
 
     #[test]

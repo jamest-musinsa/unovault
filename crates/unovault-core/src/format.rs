@@ -55,8 +55,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::crypto::{
-    self, mac_from_base64, mac_to_base64, salt_from_base64, salt_to_base64, DerivedKeys, KdfParams,
-    NONCE_LEN, SALT_LEN, TAG_LEN,
+    self, mac_from_base64, mac_to_base64, salt_from_base64, salt_to_base64,
+    wrapped_key_from_base64, wrapped_key_to_base64, DerivedKeys, KdfParams, KEY_LEN, NONCE_LEN,
+    SALT_LEN, TAG_LEN, WRAPPED_KEY_LEN,
 };
 use crate::event::Event;
 use crate::{
@@ -78,11 +79,34 @@ pub const CHUNK_MIN_LEN: usize = CHUNK_HEADER_LEN + TAG_LEN;
 
 /// The immutable manifest written once at vault creation.
 ///
-/// The `manifest_mac` field is the HMAC-SHA256 over the JSON encoding of
-/// the manifest **with `manifest_mac` set to an empty string**. This lets
-/// us serialize the manifest twice: once to compute the MAC over the
-/// canonical body, and a second time to actually write to disk with the
-/// MAC filled in.
+/// # Format v2
+///
+/// Unlike v1 (which derived the master key deterministically from the
+/// password), v2 stores a **wrapped random master key**. The manifest
+/// holds:
+///
+/// * A password slot: `password_salt` + `password_kdf` + a wrapped copy
+///   of the master key under the password-derived KEK.
+/// * An optional recovery slot: `recovery_salt` + `recovery_kdf` + a
+///   wrapped copy of the same master key under a BIP39 recovery phrase
+///   KEK. Vaults that opted out of recovery omit these fields.
+/// * A `manifest_mac_b64` HMAC over the canonical body.
+///
+/// The MAC key is still derived from the master key via HKDF
+/// (`unovault-v1/mac`), so verification requires unwrapping the master
+/// first. Tampering with any field that is not the wrapped key itself
+/// surfaces as [`UserActionableError::CorruptedManifest`] via MAC
+/// failure; tampering with the wrapped key or its salt surfaces as
+/// [`UserActionableError::WrongPassword`] because the AEAD auth tag
+/// cannot distinguish "you gave me the wrong KEK" from "someone else
+/// wrote this wrapped key."
+///
+/// # Canonical body rule
+///
+/// The MAC is computed with `manifest_mac_b64` set to the empty string.
+/// The field order and shape of the JSON output is deterministic because
+/// serde_json emits struct fields in declaration order and does not
+/// reorder keys.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VaultManifest {
     /// On-disk format version. Matches [`crate::FORMAT_VERSION`] at write
@@ -95,38 +119,92 @@ pub struct VaultManifest {
     /// crypto envelope.
     pub schema_version: u16,
 
-    /// argon2id parameters used to derive the master key from the password.
-    /// Stored in the manifest so older vaults keep working when we tune
-    /// parameters for newer hardware.
-    pub kdf: KdfParams,
+    // --- Password slot (always populated) ---
+    /// argon2id parameters used to derive the password KEK.
+    pub password_kdf: KdfParams,
 
-    /// argon2id salt, unpadded URL-safe base64.
-    pub salt_b64: String,
+    /// argon2id salt for the password KEK, unpadded URL-safe base64.
+    pub password_salt_b64: String,
 
-    /// HMAC-SHA256 over the canonical manifest JSON (with this field empty),
-    /// unpadded URL-safe base64.
+    /// Wrapped master key under the password KEK, unpadded URL-safe
+    /// base64. Always `WRAPPED_KEY_LEN` bytes after decoding.
+    pub password_wrapped_key_b64: String,
+
+    // --- Recovery slot (optional) ---
+    /// argon2id parameters used to derive the recovery KEK. `None` if
+    /// the vault was created without a recovery phrase.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_kdf: Option<KdfParams>,
+
+    /// argon2id salt for the recovery KEK, unpadded URL-safe base64.
+    /// `None` iff `recovery_kdf` is `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_salt_b64: Option<String>,
+
+    /// Wrapped master key under the recovery KEK, unpadded URL-safe
+    /// base64. `None` iff `recovery_kdf` is `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_wrapped_key_b64: Option<String>,
+
+    /// HMAC-SHA256 over the canonical manifest JSON (with this field
+    /// empty), unpadded URL-safe base64.
     pub manifest_mac_b64: String,
 }
 
+/// Inputs for building a fresh v2 manifest. Keeps [`VaultManifest::new`]
+/// from ballooning into a 6-parameter function.
+pub struct NewManifestInputs<'a> {
+    pub master: &'a Secret<[u8; KEY_LEN]>,
+    pub password_kek: &'a Secret<[u8; KEY_LEN]>,
+    pub password_salt: &'a [u8; SALT_LEN],
+    pub password_kdf: KdfParams,
+    pub recovery: Option<RecoverySlot<'a>>,
+}
+
+/// Optional recovery-slot inputs when the vault is created with a
+/// BIP39 recovery phrase.
+pub struct RecoverySlot<'a> {
+    pub recovery_kek: &'a Secret<[u8; KEY_LEN]>,
+    pub recovery_salt: &'a [u8; SALT_LEN],
+    pub recovery_kdf: KdfParams,
+}
+
 impl VaultManifest {
-    /// Build a fresh manifest for a new vault. The caller must have already
-    /// computed the derived keys from the password + fresh salt; this
-    /// function writes the MAC over the canonical form.
-    pub fn new(
-        keys: &Secret<DerivedKeys>,
-        salt: &[u8; SALT_LEN],
-        kdf: KdfParams,
-    ) -> Result<Self, VaultError> {
+    /// Build a fresh manifest for a new vault.
+    ///
+    /// Wraps the master key under the password KEK (and optionally the
+    /// recovery KEK), then computes the HMAC over the canonical body
+    /// using the sub-MAC key derived from the master.
+    pub fn new(inputs: NewManifestInputs<'_>) -> Result<Self, VaultError> {
+        let password_wrapped = crypto::wrap_master_key(inputs.password_kek, inputs.master)?;
+
+        let (recovery_kdf, recovery_salt_b64, recovery_wrapped_key_b64) =
+            if let Some(slot) = inputs.recovery {
+                let wrapped = crypto::wrap_master_key(slot.recovery_kek, inputs.master)?;
+                (
+                    Some(slot.recovery_kdf),
+                    Some(salt_to_base64(slot.recovery_salt)),
+                    Some(wrapped_key_to_base64(&wrapped)),
+                )
+            } else {
+                (None, None, None)
+            };
+
         let mut manifest = Self {
             format_version: FORMAT_VERSION,
             schema_version: 1,
-            kdf,
-            salt_b64: salt_to_base64(salt),
+            password_kdf: inputs.password_kdf,
+            password_salt_b64: salt_to_base64(inputs.password_salt),
+            password_wrapped_key_b64: wrapped_key_to_base64(&password_wrapped),
+            recovery_kdf,
+            recovery_salt_b64,
+            recovery_wrapped_key_b64,
             manifest_mac_b64: String::new(),
         };
 
+        let sub_keys = crypto::derive_sub_keys(inputs.master)?;
         let canonical = manifest.canonical_bytes()?;
-        let mac = crypto::compute_mac(keys, &canonical)?;
+        let mac = crypto::compute_mac(&sub_keys, &canonical)?;
         manifest.manifest_mac_b64 = mac_to_base64(&mac);
 
         Ok(manifest)
@@ -142,23 +220,51 @@ impl VaultManifest {
             .map_err(|_| BugInUnovaultError::SelfSerializationFailure.into())
     }
 
-    /// Verify the manifest MAC using a known-good set of derived keys.
+    /// Verify the manifest MAC using a known-good set of derived keys
+    /// (derived from the unwrapped master key).
     pub fn verify(&self, keys: &Secret<DerivedKeys>) -> Result<(), VaultError> {
         let expected = mac_from_base64(&self.manifest_mac_b64)?;
         let canonical = self.canonical_bytes()?;
         crypto::verify_mac(keys, &canonical, &expected)
     }
 
-    /// Decode the stored salt from base64 back into a fixed-length array.
-    pub fn salt(&self) -> Result<[u8; SALT_LEN], VaultError> {
-        salt_from_base64(&self.salt_b64)
+    /// Decode the stored password salt.
+    pub fn password_salt(&self) -> Result<[u8; SALT_LEN], VaultError> {
+        salt_from_base64(&self.password_salt_b64)
+    }
+
+    /// Decode the stored password-wrapped master key.
+    pub fn password_wrapped_key(&self) -> Result<[u8; WRAPPED_KEY_LEN], VaultError> {
+        wrapped_key_from_base64(&self.password_wrapped_key_b64)
+    }
+
+    /// Decode the stored recovery salt. Returns `Ok(None)` if the vault
+    /// has no recovery slot.
+    pub fn recovery_salt(&self) -> Result<Option<[u8; SALT_LEN]>, VaultError> {
+        match &self.recovery_salt_b64 {
+            Some(s) => Ok(Some(salt_from_base64(s)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Decode the stored recovery-wrapped master key.
+    pub fn recovery_wrapped_key(&self) -> Result<Option<[u8; WRAPPED_KEY_LEN]>, VaultError> {
+        match &self.recovery_wrapped_key_b64 {
+            Some(s) => Ok(Some(wrapped_key_from_base64(s)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Whether this vault was created with a recovery phrase slot.
+    pub fn has_recovery(&self) -> bool {
+        self.recovery_wrapped_key_b64.is_some()
     }
 
     /// Reject vaults produced by a newer format version than this build
-    /// supports. Equal or older versions are accepted — older formats can
-    /// still be read within the same major version.
+    /// supports. Older v1 vaults are NOT supported — they predate the
+    /// dual-wrap key hierarchy and there are no v1 vaults in the wild.
     pub fn check_format_version(&self) -> Result<(), VaultError> {
-        if self.format_version > FORMAT_VERSION {
+        if self.format_version != FORMAT_VERSION {
             return Err(UserActionableError::UnsupportedFormatVersion {
                 found: self.format_version,
                 supported: FORMAT_VERSION,
@@ -207,15 +313,14 @@ impl VaultPaths {
 }
 
 /// Create the bundle directory, write the manifest, and create the empty
-/// chunks directory. Caller has already derived the keys from the password.
+/// chunks directory. Caller has already generated the random master key
+/// and derived each KEK from password / recovery phrase.
 ///
 /// Returns the canonical [`VaultPaths`]. Errors out if the bundle path
 /// already exists to avoid accidentally overwriting a user's real vault.
 pub fn create_bundle(
     bundle_path: &Path,
-    keys: &Secret<DerivedKeys>,
-    salt: &[u8; SALT_LEN],
-    kdf: KdfParams,
+    inputs: NewManifestInputs<'_>,
 ) -> Result<VaultPaths, VaultError> {
     if bundle_path.exists() {
         return Err(UserActionableError::VaultAlreadyExists.into());
@@ -225,10 +330,33 @@ pub fn create_bundle(
 
     fs::create_dir_all(&paths.chunks_dir).map_err(|_| PlatformPolicyError::SandboxDenied)?;
 
-    let manifest = VaultManifest::new(keys, salt, kdf)?;
+    let manifest = VaultManifest::new(inputs)?;
     write_manifest(&paths, &manifest)?;
 
     Ok(paths)
+}
+
+/// Rewrite the manifest with new wrap slots. Used by the password
+/// rotation and recovery-phrase rotation flows on an already-open
+/// vault. The chunks directory is untouched — only the manifest file
+/// is replaced atomically.
+pub fn rewrite_manifest(
+    paths: &VaultPaths,
+    inputs: NewManifestInputs<'_>,
+) -> Result<(), VaultError> {
+    let manifest = VaultManifest::new(inputs)?;
+    write_manifest(paths, &manifest)
+}
+
+/// Public wrapper for the atomic manifest write used by rotation
+/// flows in `vault.rs`. The private `write_manifest` function is kept
+/// for `create_bundle`'s call site so crate-internal callers stay
+/// grep-able.
+pub fn write_manifest_public(
+    paths: &VaultPaths,
+    manifest: &VaultManifest,
+) -> Result<(), VaultError> {
+    write_manifest(paths, manifest)
 }
 
 /// Write the manifest atomically: serialize, write to `manifest.tmp`,
@@ -434,18 +562,50 @@ pub fn max_counter_for_install(paths: &VaultPaths, install: &InstallId) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::{derive_master_key, derive_sub_keys, generate_salt};
+    use crate::crypto::{derive_kek, derive_sub_keys, generate_master_key, generate_salt};
     use crate::event::{ItemId, ItemKind, ItemSnapshot, Op};
     use crate::Secret;
     use tempfile::tempdir;
     use uuid::Uuid;
 
-    fn test_keys(password: &str) -> (Secret<DerivedKeys>, [u8; SALT_LEN]) {
-        let salt = generate_salt().expect("salt");
-        let pw = Secret::new(String::from(password));
-        let master = derive_master_key(&pw, &salt, &KdfParams::TEST_ONLY).expect("master");
+    /// Bundle context shared by every test that needs a real
+    /// on-disk vault: the master key (for re-opening tests), the
+    /// derived sub-keys (for chunk encrypt/decrypt), and the salt
+    /// (for round-trip assertions).
+    struct TestCtx {
+        master: Secret<[u8; KEY_LEN]>,
+        keys: Secret<DerivedKeys>,
+        password_salt: [u8; SALT_LEN],
+    }
+
+    fn test_ctx(password: &str) -> TestCtx {
+        let master = generate_master_key().expect("generate master");
+        let password_salt = generate_salt().expect("salt");
         let keys = derive_sub_keys(&master).expect("sub keys");
-        (keys, salt)
+        let _ = password; // password only used by create_test_bundle
+        TestCtx {
+            master,
+            keys,
+            password_salt,
+        }
+    }
+
+    /// Create a real vault bundle for the given password. Returns
+    /// both the resolved paths and the context that was used, so the
+    /// caller can verify/decrypt against the same keys.
+    fn create_test_bundle(bundle_path: &Path, password: &str) -> (VaultPaths, TestCtx) {
+        let ctx = test_ctx(password);
+        let pw = Secret::new(String::from(password));
+        let kek = derive_kek(&pw, &ctx.password_salt, &KdfParams::TEST_ONLY).expect("kek");
+        let inputs = NewManifestInputs {
+            master: &ctx.master,
+            password_kek: &kek,
+            password_salt: &ctx.password_salt,
+            password_kdf: KdfParams::TEST_ONLY,
+            recovery: None,
+        };
+        let paths = create_bundle(bundle_path, inputs).expect("create bundle");
+        (paths, ctx)
     }
 
     fn make_event(timestamp_ms: u64, install: Uuid, lamport: u64) -> Event {
@@ -469,9 +629,7 @@ mod tests {
     fn create_bundle_writes_manifest_and_chunks_dir() {
         let dir = tempdir().expect("tempdir");
         let bundle = dir.path().join("test.unovault");
-        let (keys, salt) = test_keys("hunter2");
-        let paths =
-            create_bundle(&bundle, &keys, &salt, KdfParams::TEST_ONLY).expect("create bundle");
+        let (paths, _ctx) = create_test_bundle(&bundle, "hunter2");
 
         assert!(paths.bundle.exists());
         assert!(paths.manifest.exists());
@@ -484,8 +642,18 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let bundle = dir.path().join("existing");
         fs::create_dir_all(&bundle).expect("mkdir");
-        let (keys, salt) = test_keys("hunter2");
-        match create_bundle(&bundle, &keys, &salt, KdfParams::TEST_ONLY) {
+
+        let ctx = test_ctx("hunter2");
+        let pw = Secret::new(String::from("hunter2"));
+        let kek = derive_kek(&pw, &ctx.password_salt, &KdfParams::TEST_ONLY).expect("kek");
+        let inputs = NewManifestInputs {
+            master: &ctx.master,
+            password_kek: &kek,
+            password_salt: &ctx.password_salt,
+            password_kdf: KdfParams::TEST_ONLY,
+            recovery: None,
+        };
+        match create_bundle(&bundle, inputs) {
             Err(VaultError::UserActionable(UserActionableError::VaultAlreadyExists)) => {}
             other => panic!("expected VaultAlreadyExists, got {other:?}"),
         }
@@ -495,32 +663,33 @@ mod tests {
     fn manifest_roundtrip_preserves_fields() {
         let dir = tempdir().expect("tempdir");
         let bundle = dir.path().join("mf.unovault");
-        let (keys, salt) = test_keys("hunter2");
-        create_bundle(&bundle, &keys, &salt, KdfParams::TEST_ONLY).expect("create");
+        let (_paths, ctx) = create_test_bundle(&bundle, "hunter2");
 
         let loaded = load_manifest(&bundle).expect("load");
         assert_eq!(loaded.format_version, FORMAT_VERSION);
         assert_eq!(loaded.schema_version, 1);
-        assert_eq!(loaded.kdf, KdfParams::TEST_ONLY);
-        assert_eq!(loaded.salt().expect("salt decode"), salt);
+        assert_eq!(loaded.password_kdf, KdfParams::TEST_ONLY);
+        assert_eq!(
+            loaded.password_salt().expect("salt decode"),
+            ctx.password_salt
+        );
+        assert!(!loaded.has_recovery(), "no recovery slot by default");
     }
 
     #[test]
     fn manifest_verify_accepts_correct_keys() {
         let dir = tempdir().expect("tempdir");
         let bundle = dir.path().join("v.unovault");
-        let (keys, salt) = test_keys("hunter2");
-        create_bundle(&bundle, &keys, &salt, KdfParams::TEST_ONLY).expect("create");
+        let (_paths, ctx) = create_test_bundle(&bundle, "hunter2");
         let manifest = load_manifest(&bundle).expect("load");
-        manifest.verify(&keys).expect("verify should succeed");
+        manifest.verify(&ctx.keys).expect("verify should succeed");
     }
 
     #[test]
     fn manifest_verify_rejects_tampered_body() {
         let dir = tempdir().expect("tempdir");
         let bundle = dir.path().join("t.unovault");
-        let (keys, salt) = test_keys("hunter2");
-        create_bundle(&bundle, &keys, &salt, KdfParams::TEST_ONLY).expect("create");
+        let (_paths, ctx) = create_test_bundle(&bundle, "hunter2");
 
         // Tamper with the on-disk manifest: flip the schema_version from 1 to 2.
         let manifest_path = bundle.join("manifest.json");
@@ -529,7 +698,7 @@ mod tests {
         fs::write(&manifest_path, contents).expect("write");
 
         let manifest = load_manifest(&bundle).expect("load");
-        match manifest.verify(&keys) {
+        match manifest.verify(&ctx.keys) {
             Err(VaultError::UserActionable(UserActionableError::CorruptedManifest)) => {}
             other => panic!("expected CorruptedManifest, got {other:?}"),
         }
@@ -570,8 +739,8 @@ mod tests {
     fn write_and_read_single_chunk_roundtrip() {
         let dir = tempdir().expect("tempdir");
         let bundle = dir.path().join("rt.unovault");
-        let (keys, salt) = test_keys("hunter2");
-        let paths = create_bundle(&bundle, &keys, &salt, KdfParams::TEST_ONLY).expect("create");
+        let (paths, ctx) = create_test_bundle(&bundle, "hunter2");
+        let keys = ctx.keys;
 
         let install = InstallId::new();
         let events = vec![
@@ -590,8 +759,8 @@ mod tests {
     fn read_all_events_merges_multiple_chunks() {
         let dir = tempdir().expect("tempdir");
         let bundle = dir.path().join("multi.unovault");
-        let (keys, salt) = test_keys("hunter2");
-        let paths = create_bundle(&bundle, &keys, &salt, KdfParams::TEST_ONLY).expect("create");
+        let (paths, ctx) = create_test_bundle(&bundle, "hunter2");
+        let keys = ctx.keys;
 
         let install = InstallId::new();
         let events_a = vec![make_event(1, install.as_uuid(), 0)];
@@ -610,8 +779,8 @@ mod tests {
     fn list_chunk_files_ignores_dotfiles_and_wrong_extension() {
         let dir = tempdir().expect("tempdir");
         let bundle = dir.path().join("noise.unovault");
-        let (keys, salt) = test_keys("hunter2");
-        let paths = create_bundle(&bundle, &keys, &salt, KdfParams::TEST_ONLY).expect("create");
+        let (paths, ctx) = create_test_bundle(&bundle, "hunter2");
+        let keys = ctx.keys;
 
         let install = InstallId::new();
         write_chunk(&paths, &install, 1, &keys, &[]).expect("real chunk");
@@ -627,7 +796,7 @@ mod tests {
 
     #[test]
     fn decode_rejects_wrong_magic() {
-        let (keys, _) = test_keys("hunter2");
+        let keys = test_ctx("hunter2").keys;
         let mut bad = vec![0u8; CHUNK_MIN_LEN];
         bad[..4].copy_from_slice(b"XXXX");
         match decode_chunk_bytes(&keys, &bad) {
@@ -638,7 +807,7 @@ mod tests {
 
     #[test]
     fn decode_rejects_future_format_version() {
-        let (keys, _) = test_keys("hunter2");
+        let keys = test_ctx("hunter2").keys;
         let mut bad = Vec::new();
         bad.extend_from_slice(CHUNK_MAGIC);
         bad.extend_from_slice(&(FORMAT_VERSION + 10).to_le_bytes());
@@ -656,7 +825,7 @@ mod tests {
 
     #[test]
     fn decode_rejects_truncated_bytes() {
-        let (keys, _) = test_keys("hunter2");
+        let keys = test_ctx("hunter2").keys;
         let short = vec![0u8; 10];
         match decode_chunk_bytes(&keys, &short) {
             Err(VaultError::UserActionable(UserActionableError::CorruptedChunk)) => {}
@@ -668,8 +837,7 @@ mod tests {
     fn max_counter_for_install_is_zero_when_fresh() {
         let dir = tempdir().expect("tempdir");
         let bundle = dir.path().join("fresh.unovault");
-        let (keys, salt) = test_keys("hunter2");
-        let paths = create_bundle(&bundle, &keys, &salt, KdfParams::TEST_ONLY).expect("create");
+        let (paths, _ctx) = create_test_bundle(&bundle, "hunter2");
 
         let install = InstallId::new();
         let max = max_counter_for_install(&paths, &install).expect("max");
@@ -680,8 +848,8 @@ mod tests {
     fn max_counter_for_install_tracks_highest_written_counter() {
         let dir = tempdir().expect("tempdir");
         let bundle = dir.path().join("count.unovault");
-        let (keys, salt) = test_keys("hunter2");
-        let paths = create_bundle(&bundle, &keys, &salt, KdfParams::TEST_ONLY).expect("create");
+        let (paths, ctx) = create_test_bundle(&bundle, "hunter2");
+        let keys = ctx.keys;
 
         let install = InstallId::new();
         write_chunk(&paths, &install, 1, &keys, &[]).expect("1");
@@ -696,8 +864,8 @@ mod tests {
     fn max_counter_for_install_is_per_install() {
         let dir = tempdir().expect("tempdir");
         let bundle = dir.path().join("shard.unovault");
-        let (keys, salt) = test_keys("hunter2");
-        let paths = create_bundle(&bundle, &keys, &salt, KdfParams::TEST_ONLY).expect("create");
+        let (paths, ctx) = create_test_bundle(&bundle, "hunter2");
+        let keys = ctx.keys;
 
         let a = InstallId::new();
         let b = InstallId::new();
@@ -716,8 +884,8 @@ mod tests {
     fn dangling_chunk_tmp_file_is_ignored_by_reader() {
         let dir = tempdir().expect("tempdir");
         let bundle = dir.path().join("crash.unovault");
-        let (keys, salt) = test_keys("hunter2");
-        let paths = create_bundle(&bundle, &keys, &salt, KdfParams::TEST_ONLY).expect("create");
+        let (paths, ctx) = create_test_bundle(&bundle, "hunter2");
+        let keys = ctx.keys;
 
         let install = InstallId::new();
         write_chunk(
@@ -749,7 +917,7 @@ mod tests {
     /// proptests.
     #[test]
     fn decode_chunk_bytes_never_panics_on_adversarial_input() {
-        let (keys, _) = test_keys("hunter2");
+        let keys = test_ctx("hunter2").keys;
         // Use a deterministic PRNG seed so failures are reproducible.
         let mut state: u64 = 0xDEAD_BEEF_CAFE_BABE;
         for iteration in 0..256 {
@@ -774,8 +942,8 @@ mod tests {
     fn two_installs_write_side_by_side_without_collision() {
         let dir = tempdir().expect("tempdir");
         let bundle = dir.path().join("concurrent.unovault");
-        let (keys, salt) = test_keys("hunter2");
-        let paths = create_bundle(&bundle, &keys, &salt, KdfParams::TEST_ONLY).expect("create");
+        let (paths, ctx) = create_test_bundle(&bundle, "hunter2");
+        let keys = ctx.keys;
 
         let install_a = InstallId::new();
         let install_b = InstallId::new();

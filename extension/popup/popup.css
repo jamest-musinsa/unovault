@@ -1,0 +1,138 @@
+/* Popup chrome — terracotta accent, warm neutrals, matches the
+   desktop app's design system at a smaller scale. The popup is the
+   extension's public face so it has to look like it belongs next to
+   the desktop app. */
+
+:root {
+  --bg: #fbfaf7;
+  --surface: #ffffff;
+  --text: #1a1a1a;
+  --text-muted: #6b6b6b;
+  --border: #e6e3dc;
+  --accent: #b8532c;
+  --radius: 10px;
+  --font-ui: 'Inter Display', 'Inter', -apple-system, BlinkMacSystemFont,
+    'Segoe UI', sans-serif;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  font-family: var(--font-ui);
+  font-size: 14px;
+  color: var(--text);
+  background: var(--bg);
+}
+
+.popup {
+  width: 320px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.t-title {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.t-muted {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.status {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.status.connected::before {
+  content: '●';
+  color: #2a8a4b;
+  margin-right: 4px;
+}
+
+.status.disconnected::before {
+  content: '●';
+  color: #c94a3c;
+  margin-right: 4px;
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.items {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 40px;
+}
+
+.item-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.item-row:hover {
+  border-color: var(--accent);
+}
+
+.item-title {
+  font-weight: 500;
+}
+
+.item-username {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.btn-secondary {
+  appearance: none;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  padding: 8px 12px;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.btn-secondary:hover {
+  border-color: var(--accent);
+}
+
+.footer {
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+kbd {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  padding: 1px 5px;
+}
