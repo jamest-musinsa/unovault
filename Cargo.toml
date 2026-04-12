@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "app/src-tauri",
+    "crates/unovault-cli",
     "crates/unovault-core",
     "crates/unovault-ffi",
     "crates/unovault-import",

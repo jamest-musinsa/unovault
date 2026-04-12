@@ -108,6 +108,57 @@ jobs:
         working-directory: swift/UnovaultFFI
         run: swift test
 
+  svelte:
+    name: Svelte UI (check + build)
+    runs-on: macos-14
+    needs: check
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+
+      - name: Install
+        run: cd app && pnpm install --frozen-lockfile
+
+      - name: svelte-check
+        run: cd app && pnpm svelte-check
+
+      - name: vite build
+        run: cd app && pnpm build
+
+  extension:
+    name: Chrome Extension (type-check + build)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: extension/pnpm-lock.yaml
+
+      - name: Install
+        run: cd extension && pnpm install --frozen-lockfile
+
+      - name: tsc --noEmit
+        run: cd extension && pnpm type-check
+
+      - name: vite build
+        run: cd extension && pnpm build
+
   supply-chain:
     name: cargo-deny + cargo-audit
     runs-on: ubuntu-latest

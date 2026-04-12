@@ -1,0 +1,22 @@
+[package]
+name = "unovault-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "CLI for unovault — the second reference implementation of the .unovault format"
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "unovault"
+path = "src/main.rs"
+
+[dependencies]
+unovault-core = { path = "../unovault-core" }
+unovault-import = { path = "../unovault-import" }
+serde_json.workspace = true
+uuid.workspace = true

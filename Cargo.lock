@@ -4954,6 +4954,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "unovault-cli"
+version = "0.0.1"
+dependencies = [
+ "serde_json",
+ "unovault-core",
+ "unovault-import",
+ "uuid",
+]
+
+[[package]]
 name = "unovault-core"
 version = "0.0.1"
 dependencies = [
