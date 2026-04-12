@@ -151,6 +151,29 @@ export async function rotateRecoveryPhrase(): Promise<string> {
 }
 
 // =============================================================================
+// ICLOUD SYNC — mirrors unovault_app::commands (week 22-23)
+// =============================================================================
+
+export interface ICloudStatus {
+  available: boolean;
+  path: string | null;
+}
+
+export interface SyncOutcome {
+  pushed_count: number;
+  pulled_count: number;
+  path: string;
+}
+
+export async function icloudStatus(): Promise<ICloudStatus> {
+  return invoke('icloud_status');
+}
+
+export async function syncVault(): Promise<SyncOutcome> {
+  return invoke('sync_vault');
+}
+
+// =============================================================================
 // IMPORT WIZARD — mirror unovault_app::commands::ImportPreview et al.
 // =============================================================================
 

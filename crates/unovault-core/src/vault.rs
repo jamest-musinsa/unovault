@@ -55,12 +55,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::crypto::{self, DerivedKeys, KdfParams, KEY_LEN, SALT_LEN};
 use crate::event::{sort_events, Event, FieldKey, FieldValue, ItemId, ItemKind, ItemSnapshot, Op};
 use crate::format::{
-    create_bundle, load_manifest, max_counter_for_install, read_all_events, write_chunk,
-    NewManifestInputs, RecoverySlot, VaultPaths,
+    create_bundle, list_chunk_filenames, load_manifest, max_counter_for_install, read_all_events,
+    read_chunk_raw, write_chunk, write_chunk_raw, NewManifestInputs, RecoverySlot, VaultPaths,
 };
 use crate::install_id::InstallId;
 use crate::recovery::RecoveryPhrase;
 use crate::secret::Secret;
+use crate::sync::FileSystemBackend;
 use crate::{BugInUnovaultError, UserActionableError, VaultError};
 
 /// Folded, in-memory representation of a single vault item. Produced by
@@ -209,6 +210,16 @@ pub fn fold_events(events: &[Event]) -> HashMap<ItemId, ItemState> {
     }
 
     state
+}
+
+/// Summary of a [`Vault::sync_with_backend`] call. Used by the UI
+/// layer to surface "synced 3 new chunks from iCloud" toasts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SyncSummary {
+    /// How many local chunks were uploaded to the backend.
+    pub pushed: u32,
+    /// How many backend chunks were downloaded to local.
+    pub pulled: u32,
 }
 
 /// The integrated vault — owns in-memory state, derived keys, and the
@@ -734,6 +745,131 @@ impl Vault {
             .ok_or(BugInUnovaultError::ChunkCounterOverflow)?;
 
         Ok(())
+    }
+
+    /// Re-read every chunk file on disk and refold the in-memory
+    /// item state. Pending (unsaved) events are preserved and folded
+    /// on top of the re-read disk events, so a caller that was in
+    /// the middle of edits does not lose them.
+    ///
+    /// Used by the sync path: after pulling new chunks from a
+    /// backend, `refresh()` picks them up without requiring a full
+    /// relock + reunlock cycle (which would re-run argon2id).
+    ///
+    /// Counters are re-seeded from whatever is on disk so a future
+    /// `save()` continues numbering correctly even if the backend
+    /// pulled chunks that advance our own install's max counter
+    /// (normally it won't — our install only writes from this
+    /// process — but we seed defensively).
+    pub fn refresh(&mut self) -> Result<(), VaultError> {
+        let mut disk_events = read_all_events(&self.paths, &self.keys)?;
+        // Fold in the pending events so an in-flight edit survives
+        // the refresh. Cloning is necessary because sort + fold
+        // consume the list, and we need to keep `self.pending`
+        // intact for a later save().
+        disk_events.extend(self.pending.iter().cloned());
+        sort_events(&mut disk_events);
+        self.items = fold_events(&disk_events);
+
+        // Re-seed the counters. `max_counter_for_install` scans the
+        // chunks dir and only considers this install's filenames, so
+        // pulling in someone else's chunks doesn't bump our counter.
+        let max_counter = max_counter_for_install(&self.paths, &self.install)?;
+        let next_counter = max_counter
+            .checked_add(1)
+            .ok_or(BugInUnovaultError::ChunkCounterOverflow)?;
+        if next_counter > self.next_chunk_counter {
+            self.next_chunk_counter = next_counter;
+        }
+
+        // Lamport counter tracks the max value we have ever seen
+        // produced by our own install, not the merged stream. A
+        // pulled chunk from another install cannot advance our
+        // lamport because its events carry that other install's
+        // lamport values; our tiebreaker rule in `Event::cmp`
+        // handles cross-install ordering via install_id.
+        let max_lamport = disk_events
+            .iter()
+            .filter(|e| e.install_id == self.install.as_uuid())
+            .map(|e| e.lamport)
+            .max()
+            .unwrap_or(0);
+        let next_lamport = max_lamport
+            .checked_add(1)
+            .ok_or(BugInUnovaultError::ChunkCounterOverflow)?;
+        if next_lamport > self.next_lamport {
+            self.next_lamport = next_lamport;
+        }
+
+        Ok(())
+    }
+
+    /// Push local chunks to the backend and pull missing backend
+    /// chunks to local. Then call [`Vault::refresh`] so the
+    /// in-memory state reflects anything that was pulled.
+    ///
+    /// Returns a summary of how many chunks moved in each direction.
+    ///
+    /// # Conflict model
+    ///
+    /// Chunks are content-addressed by filename: the per-install
+    /// sharding key makes any two installs' filenames disjoint, so
+    /// "push local to backend" and "pull backend to local" never
+    /// overwrite anything. A file with the same name on both sides
+    /// is assumed to be byte-identical and is skipped.
+    ///
+    /// # Failure semantics
+    ///
+    /// Errors short-circuit. A push that fails partway leaves the
+    /// already-pushed chunks on the backend; a pull that fails
+    /// partway leaves the already-pulled chunks on disk. Both
+    /// states are valid restart points — the next sync picks up
+    /// where the previous one left off because the comparison is
+    /// by filename.
+    ///
+    /// # What chunks are valid to push
+    ///
+    /// The caller must call [`Vault::save`] first if there are
+    /// pending edits — we do not implicitly save here because
+    /// callers may want to batch rotations and sync separately.
+    /// An `Err(InvariantViolation)` would be a loud way to catch
+    /// the forgotten-save case; for now we silently sync only what
+    /// is on disk and trust the caller.
+    pub fn sync_with_backend(
+        &mut self,
+        backend: &dyn FileSystemBackend,
+    ) -> Result<SyncSummary, VaultError> {
+        let local_names = list_chunk_filenames(&self.paths)?;
+        let remote_names = backend.list()?;
+
+        let local_set: std::collections::HashSet<String> = local_names.iter().cloned().collect();
+        let remote_set: std::collections::HashSet<String> = remote_names.iter().cloned().collect();
+
+        // Push: every local filename not already on the backend.
+        let mut pushed = 0u32;
+        for name in &local_names {
+            if !remote_set.contains(name) {
+                let bytes = read_chunk_raw(&self.paths, name)?;
+                backend.write(name, &bytes)?;
+                pushed = pushed.saturating_add(1);
+            }
+        }
+
+        // Pull: every backend filename not already local.
+        let mut pulled = 0u32;
+        for name in &remote_names {
+            if !local_set.contains(name) {
+                let bytes = backend.read(name)?;
+                write_chunk_raw(&self.paths, name, &bytes)?;
+                pulled = pulled.saturating_add(1);
+            }
+        }
+
+        if pulled > 0 {
+            self.refresh()?;
+        }
+
+        Ok(SyncSummary { pushed, pulled })
     }
 
     /// Path of the vault bundle on disk.
@@ -1513,6 +1649,370 @@ mod tests {
         match vault.enable_recovery() {
             Err(VaultError::BugInUnovault(_)) => {}
             other => panic!("expected BugInUnovault, got {other:?}"),
+        }
+    }
+
+    // =========================================================================
+    // Week 22-23 — sync with FileSystemBackend
+    // =========================================================================
+
+    use crate::sync::local::LocalBackend;
+
+    #[test]
+    fn sync_pushes_local_chunks_to_an_empty_backend() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("push.unovault");
+        let install = InstallId::new();
+
+        let mut vault =
+            Vault::create_for_tests(&path, Secret::new("hunter2".into()), install).expect("create");
+        vault.add_item(snap("GitHub")).expect("add");
+        vault.save().expect("save");
+        vault.add_item(snap("Gmail")).expect("add 2");
+        vault.save().expect("save 2");
+
+        // Two local chunks, empty backend.
+        let backend_dir = tempdir().expect("backend tempdir");
+        let backend = LocalBackend::new(backend_dir.path()).expect("backend");
+        assert!(backend.list().expect("list").is_empty());
+
+        let summary = vault.sync_with_backend(&backend).expect("sync");
+        assert_eq!(summary.pushed, 2);
+        assert_eq!(summary.pulled, 0);
+
+        // Both chunks should now live on the backend.
+        let remote = backend.list().expect("list post-push");
+        assert_eq!(remote.len(), 2);
+    }
+
+    #[test]
+    fn sync_is_idempotent_when_both_sides_already_agree() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("idem.unovault");
+        let install = InstallId::new();
+
+        let mut vault =
+            Vault::create_for_tests(&path, Secret::new("hunter2".into()), install).expect("create");
+        vault.add_item(snap("Item")).expect("add");
+        vault.save().expect("save");
+
+        let backend_dir = tempdir().expect("backend tempdir");
+        let backend = LocalBackend::new(backend_dir.path()).expect("backend");
+        let first = vault.sync_with_backend(&backend).expect("first sync");
+        assert_eq!(first.pushed, 1);
+
+        // Second sync is a no-op.
+        let second = vault.sync_with_backend(&backend).expect("second sync");
+        assert_eq!(second.pushed, 0);
+        assert_eq!(second.pulled, 0);
+    }
+
+    #[test]
+    fn sync_pulls_chunks_from_backend_that_another_install_wrote() {
+        // Install A writes items, pushes to a shared backend.
+        // Install B starts with an empty vault, pulls from the
+        // backend, and should see every item A wrote.
+        let backend_dir = tempdir().expect("shared backend");
+        let backend = LocalBackend::new(backend_dir.path()).expect("backend");
+
+        let a_dir = tempdir().expect("a dir");
+        let a_path = a_dir.path().join("a.unovault");
+        let a_install = InstallId::new();
+        {
+            let mut a = Vault::create_for_tests(&a_path, Secret::new("pw".into()), a_install)
+                .expect("a create");
+            a.add_item(snap("GitHub")).expect("gh");
+            a.add_item(snap("Gmail")).expect("gm");
+            a.save().expect("a save");
+            a.sync_with_backend(&backend).expect("a push");
+        }
+
+        // Install B uses the **same password** so its derived keys
+        // match. In real sync this would be handled by the
+        // master-password-wrapping layer; we use identical
+        // passwords here to isolate the sync behaviour.
+        //
+        // The two vaults also need identical manifest-level keys.
+        // To get that in v2 (where the master key is random), B
+        // must be constructed from A's bundle, not its own fresh
+        // creation. The realistic workflow: the user copies the
+        // whole `.unovault` folder from device A to device B (or
+        // iCloud does it for them), then opens it with the same
+        // password. We simulate this by cloning A's bundle into B.
+        let b_dir = tempdir().expect("b dir");
+        let b_path = b_dir.path().join("b.unovault");
+        copy_bundle_recursive(&a_path, &b_path);
+
+        // B uses a fresh install id so its future writes don't
+        // collide with A's.
+        let b_install = InstallId::new();
+        let mut b = Vault::unlock(&b_path, Secret::new("pw".into()), b_install).expect("b unlock");
+        assert_eq!(b.len(), 2, "B should see A's items after unlock");
+
+        // Now have A write a new item and push again.
+        let mut a = Vault::unlock(&a_path, Secret::new("pw".into()), a_install).expect("a unlock");
+        a.add_item(snap("NewItem")).expect("new");
+        a.save().expect("save new");
+        a.sync_with_backend(&backend).expect("a push new");
+
+        // B syncs and should pick up the new item.
+        let summary = b.sync_with_backend(&backend).expect("b sync");
+        assert!(summary.pulled >= 1, "B should pull at least one new chunk");
+        assert_eq!(b.len(), 3, "B should now see all three items");
+    }
+
+    #[test]
+    fn refresh_picks_up_chunks_written_externally() {
+        // Simulates "iCloud delivered a new chunk underneath us
+        // while we were running." The test writes a chunk
+        // out-of-band through the format module, then calls
+        // refresh() and verifies the new item appears.
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("refresh.unovault");
+        let install = InstallId::new();
+
+        let mut vault =
+            Vault::create_for_tests(&path, Secret::new("hunter2".into()), install).expect("create");
+        vault.add_item(snap("Local")).expect("local add");
+        vault.save().expect("local save");
+        assert_eq!(vault.len(), 1);
+
+        // Generate a chunk from a different install id — simulates
+        // "another device wrote this file into our bundle."
+        let other_install = InstallId::new();
+        let external_id = ItemId::new();
+        let external_event = Event::new(
+            other_install.as_uuid(),
+            1,
+            current_timestamp_ms().expect("ts"),
+            Op::CreateItem {
+                item_id: external_id,
+                initial: snap("External"),
+            },
+        );
+        // Re-use the same keys — in production the sync layer
+        // trusts that the backend only carries chunks encrypted
+        // under the same master.
+        let bytes = crate::format::encode_chunk_bytes(&vault.keys, &[external_event])
+            .expect("encode external");
+        let filename = format::VaultPaths::chunk_filename(1, &other_install);
+        let external_chunk = vault.paths.chunks_dir.join(&filename);
+        std::fs::write(&external_chunk, &bytes).expect("drop chunk");
+
+        // Before refresh: still only the local item.
+        assert_eq!(vault.len(), 1);
+
+        vault.refresh().expect("refresh");
+        assert_eq!(vault.len(), 2, "refresh should surface the external item");
+        assert!(vault.get(&external_id).is_some());
+    }
+
+    #[test]
+    fn sync_converges_two_vaults_under_chaos_reorder() {
+        // Two vaults, both hold their own install id. Each writes
+        // a few items and pushes to a shared chaos-wrapped backend.
+        // After full reveal, both sides pull + refresh and must
+        // end up with identical item sets.
+        use crate::sync::chaos::ChaosBackend;
+
+        let backend_dir = tempdir().expect("backend");
+        let local_backend = LocalBackend::new(backend_dir.path()).expect("local");
+        // Wrap in chaos so list() returns shuffled results. For
+        // this convergence test we don't hide any files — LWW
+        // convergence is what we're proving, not delivery
+        // eventuality (which the existing chaos tests already
+        // prove).
+        let backend = ChaosBackend::new(Box::new(local_backend), 0xC0FFEE);
+
+        // A's initial bundle — both vaults must share the same
+        // master key, so we clone A's bundle to create B.
+        let a_dir = tempdir().expect("a");
+        let a_path = a_dir.path().join("a.unovault");
+        let a_install = InstallId::new();
+        {
+            let mut a = Vault::create_for_tests(&a_path, Secret::new("pw".into()), a_install)
+                .expect("a create");
+            a.save().expect("a empty save noop");
+        }
+        let b_dir = tempdir().expect("b");
+        let b_path = b_dir.path().join("b.unovault");
+        copy_bundle_recursive(&a_path, &b_path);
+        let b_install = InstallId::new();
+
+        let mut a = Vault::unlock(&a_path, Secret::new("pw".into()), a_install).expect("a unlock");
+        let mut b = Vault::unlock(&b_path, Secret::new("pw".into()), b_install).expect("b unlock");
+
+        // A writes three items and pushes.
+        a.add_item(snap("A1")).expect("a1");
+        a.add_item(snap("A2")).expect("a2");
+        a.add_item(snap("A3")).expect("a3");
+        a.save().expect("a save");
+        a.sync_with_backend(&backend).expect("a push");
+
+        // B writes two items and pushes.
+        b.add_item(snap("B1")).expect("b1");
+        b.add_item(snap("B2")).expect("b2");
+        b.save().expect("b save");
+        b.sync_with_backend(&backend).expect("b push");
+
+        // Both sides sync again — each pulls the other's chunks.
+        a.sync_with_backend(&backend).expect("a pull");
+        b.sync_with_backend(&backend).expect("b pull");
+
+        // Both vaults should now hold all five items. The titles
+        // are a stable fingerprint to compare against.
+        assert_eq!(a.len(), 5);
+        assert_eq!(b.len(), 5);
+
+        let mut a_titles: Vec<_> = a.items().map(|i| i.title.clone()).collect();
+        let mut b_titles: Vec<_> = b.items().map(|i| i.title.clone()).collect();
+        a_titles.sort();
+        b_titles.sort();
+        assert_eq!(a_titles, b_titles, "LWW must converge across installs");
+        assert_eq!(a_titles, vec!["A1", "A2", "A3", "B1", "B2"]);
+    }
+
+    // =========================================================================
+    // Week 23 — two-install LWW convergence property test
+    // =========================================================================
+
+    /// One action a random test case can apply to a vault. Small
+    /// closed set so the proptest space stays tractable and every
+    /// operation is meaningful to fold/merge.
+    #[derive(Debug, Clone)]
+    enum Action {
+        AddItem(String),
+        SetNotes(usize, String),
+    }
+
+    fn apply_action(vault: &mut Vault, action: &Action, known_ids: &mut Vec<ItemId>) {
+        match action {
+            Action::AddItem(title) => {
+                if let Ok(id) = vault.add_item(snap(title)) {
+                    known_ids.push(id);
+                }
+            }
+            Action::SetNotes(idx, text) => {
+                if known_ids.is_empty() {
+                    return;
+                }
+                let id = known_ids[*idx % known_ids.len()];
+                let _ = vault.set_field(id, FieldKey::Notes, FieldValue::Text(text.clone()));
+            }
+        }
+    }
+
+    /// Turn a packed `u32` seed into a typed [`Action`]. The low
+    /// bits pick the variant, the next bits pick an item index,
+    /// and the remaining bits seed a short lowercase title.
+    fn action_from_seed(seed: u32) -> Action {
+        let variant = seed & 0x1;
+        let idx = ((seed >> 1) & 0xFF) as usize;
+        let word_seed = (seed >> 9) & 0xFFFF;
+        let title = format!("w{word_seed:04x}");
+        if variant == 0 {
+            Action::AddItem(title)
+        } else {
+            Action::SetNotes(idx, title)
+        }
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(16))]
+
+        // Two vaults share a master key (B is cloned from A). Each
+        // applies a random sequence of Add + SetNotes actions,
+        // derived from a u32 seed. Both push their saved chunks to
+        // a shared backend and then pull. After both syncs
+        // complete, the folded item state on both sides must be
+        // equal (same set of items and same notes per item),
+        // regardless of which actions happened on which install.
+        #[test]
+        fn proptest_two_install_lww_converges(
+            seeds_a in proptest::collection::vec(proptest::num::u32::ANY, 1..=6),
+            seeds_b in proptest::collection::vec(proptest::num::u32::ANY, 1..=6),
+        ) {
+            let a_dir = tempdir().expect("a");
+            let a_path = a_dir.path().join("a.unovault");
+            let a_install = InstallId::new();
+            {
+                let _a = Vault::create_for_tests(
+                    &a_path,
+                    Secret::new("pw".into()),
+                    a_install,
+                ).expect("a create");
+            }
+            let b_dir = tempdir().expect("b");
+            let b_path = b_dir.path().join("b.unovault");
+            copy_bundle_recursive(&a_path, &b_path);
+            let b_install = InstallId::new();
+
+            let mut a = Vault::unlock(
+                &a_path,
+                Secret::new("pw".into()),
+                a_install,
+            ).expect("a unlock");
+            let mut b = Vault::unlock(
+                &b_path,
+                Secret::new("pw".into()),
+                b_install,
+            ).expect("b unlock");
+
+            let plan_a: Vec<Action> = seeds_a.iter().copied().map(action_from_seed).collect();
+            let plan_b: Vec<Action> = seeds_b.iter().copied().map(action_from_seed).collect();
+
+            let mut a_ids: Vec<ItemId> = Vec::new();
+            let mut b_ids: Vec<ItemId> = Vec::new();
+            for action in &plan_a {
+                apply_action(&mut a, action, &mut a_ids);
+            }
+            for action in &plan_b {
+                apply_action(&mut b, action, &mut b_ids);
+            }
+            a.save().expect("a save");
+            b.save().expect("b save");
+
+            let backend_dir = tempdir().expect("backend");
+            let backend = LocalBackend::new(backend_dir.path()).expect("backend");
+
+            a.sync_with_backend(&backend).expect("a sync 1");
+            b.sync_with_backend(&backend).expect("b sync 1");
+            // Second round pulls what the other side just pushed.
+            a.sync_with_backend(&backend).expect("a sync 2");
+            b.sync_with_backend(&backend).expect("b sync 2");
+
+            // Both sides must see the same item set and the same
+            // notes per item. Titles + notes are a compact
+            // fingerprint that catches realistic divergences.
+            let mut a_state: Vec<(String, Option<String>)> = a
+                .items()
+                .map(|i| (i.title.clone(), i.notes.clone()))
+                .collect();
+            let mut b_state: Vec<(String, Option<String>)> = b
+                .items()
+                .map(|i| (i.title.clone(), i.notes.clone()))
+                .collect();
+            a_state.sort();
+            b_state.sort();
+            proptest::prop_assert_eq!(a_state, b_state);
+        }
+    }
+
+    /// Copy a vault bundle directory recursively. Used by the
+    /// sync tests to simulate "the user copied the vault from
+    /// device A to device B."
+    fn copy_bundle_recursive(src: &Path, dst: &Path) {
+        std::fs::create_dir_all(dst).expect("dst dir");
+        for entry in std::fs::read_dir(src).expect("read src") {
+            let entry = entry.expect("entry");
+            let ty = entry.file_type().expect("file type");
+            let src_path = entry.path();
+            let dst_path = dst.join(entry.file_name());
+            if ty.is_dir() {
+                copy_bundle_recursive(&src_path, &dst_path);
+            } else {
+                std::fs::copy(&src_path, &dst_path).expect("copy");
+            }
         }
     }
 }

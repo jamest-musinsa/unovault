@@ -70,6 +70,8 @@ pub fn run() {
             commands::change_password,
             commands::enable_recovery_phrase,
             commands::rotate_recovery_phrase,
+            commands::icloud_status,
+            commands::sync_vault,
             commands::preview_import,
             commands::preview_import_with_source,
             commands::commit_import,

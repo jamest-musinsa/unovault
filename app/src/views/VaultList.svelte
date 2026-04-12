@@ -6,8 +6,16 @@
   // actions, then scrollable list or empty state. No inline styles
   // for any of the row chrome; it all lives in ListRow.svelte.
 
+  import { onMount } from 'svelte';
   import { app } from '../lib/store.svelte';
-  import { lockVault, toCommandError } from '../lib/ipc';
+  import {
+    icloudStatus,
+    listItems,
+    lockVault,
+    syncVault,
+    toCommandError,
+    type ICloudStatus,
+  } from '../lib/ipc';
   import CommandBar from '../lib/components/CommandBar.svelte';
   import ListRow from '../lib/components/ListRow.svelte';
   import EmptyState from '../lib/components/EmptyState.svelte';
@@ -16,6 +24,44 @@
   import ErrorBanner from '../lib/components/ErrorBanner.svelte';
 
   let query = $state('');
+  let cloudStatus = $state<ICloudStatus | null>(null);
+  let syncMessage = $state<string | null>(null);
+  let syncing = $state(false);
+
+  onMount(async () => {
+    try {
+      cloudStatus = await icloudStatus();
+    } catch (raw) {
+      // iCloud probe failure is not fatal — just hide the button.
+      console.warn('[unovault] icloud probe failed', raw);
+    }
+  });
+
+  async function onSync() {
+    syncing = true;
+    syncMessage = null;
+    try {
+      const outcome = await syncVault();
+      const items = await listItems();
+      app.setItems(items);
+      if (outcome.pushed_count === 0 && outcome.pulled_count === 0) {
+        syncMessage = 'Already up to date.';
+      } else {
+        const bits: string[] = [];
+        if (outcome.pushed_count > 0) {
+          bits.push(`pushed ${outcome.pushed_count}`);
+        }
+        if (outcome.pulled_count > 0) {
+          bits.push(`pulled ${outcome.pulled_count}`);
+        }
+        syncMessage = `Synced — ${bits.join(', ')}.`;
+      }
+    } catch (raw) {
+      app.setError(toCommandError(raw));
+    } finally {
+      syncing = false;
+    }
+  }
 
   const filtered = $derived(
     query.trim().length === 0
@@ -71,10 +117,24 @@
     <div class="header-actions">
       <Button variant="secondary" size="sm" onclick={addNew}>Add item</Button>
       <Button variant="ghost" size="sm" onclick={openImport}>Import</Button>
+      {#if cloudStatus?.available}
+        <Button
+          variant="ghost"
+          size="sm"
+          onclick={onSync}
+          disabled={syncing}
+        >
+          {syncing ? 'Syncing…' : 'Sync'}
+        </Button>
+      {/if}
       <Button variant="ghost" size="sm" onclick={openSettings}>Settings</Button>
       <Button variant="ghost" size="sm" onclick={onLock}>Lock</Button>
     </div>
   </header>
+
+  {#if syncMessage}
+    <div class="sync-toast t-meta">{syncMessage}</div>
+  {/if}
 
   {#if app.error}
     <div class="error-wrap">
@@ -174,5 +234,14 @@
     gap: var(--s-3);
     flex-wrap: wrap;
     justify-content: center;
+  }
+
+  .sync-toast {
+    margin: 0 var(--s-6) var(--s-3);
+    padding: var(--s-2) var(--s-3);
+    background: rgba(42, 138, 75, 0.08);
+    border: 1px solid rgba(42, 138, 75, 0.25);
+    border-radius: var(--r-sm);
+    color: var(--text);
   }
 </style>

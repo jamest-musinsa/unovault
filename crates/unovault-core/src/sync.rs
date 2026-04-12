@@ -161,6 +161,156 @@ pub mod local {
 }
 
 // =============================================================================
+// ICLOUD BACKEND — macOS iCloud Drive folder discovery, implemented as a
+// thin wrapper over LocalBackend pointed at the right path.
+// =============================================================================
+
+pub mod icloud {
+    //! Discover the macOS iCloud Drive root and expose a
+    //! [`LocalBackend`] rooted at its `unovault/` subfolder.
+    //!
+    //! # How iCloud Drive actually works from a filesystem POV
+    //!
+    //! macOS stores iCloud Drive files at
+    //! `~/Library/Mobile Documents/com~apple~CloudDocs/` (note the
+    //! tildes — Apple's own `NSHomeDirectory` expansion produces
+    //! that path). Files written there are synced to Apple's
+    //! servers and mirrored onto every other device signed into
+    //! the same Apple ID. This is exactly the delivery
+    //! mechanism the LWW event log needs: append-only chunk files
+    //! appearing in a directory.
+    //!
+    //! A proper iCloud integration uses `NSMetadataQuery` to get
+    //! push notifications when new chunks arrive (so the vault
+    //! refreshes without polling). That requires iCloud container
+    //! entitlements which the current build profile does not
+    //! carry. As a fallback the vault can poll `list()` on the
+    //! backend when the user clicks "Sync" — the functionality
+    //! is strictly less good than push, but it shows the full
+    //! round trip working end-to-end.
+    //!
+    //! # What this module does not do
+    //!
+    //! * No file-change notifications. Polling only.
+    //! * No conflict detection beyond LWW — if the OS produces
+    //!   `<name> (conflict from device-2).chunk` on an iCloud
+    //!   conflict, we ignore them (filter via `.ends_with(".chunk")`
+    //!   misses them) and the user has to open the conflict copy
+    //!   in the Finder.
+    //! * No iCloud availability check via reachability APIs. We
+    //!   just test whether the folder exists and is writable.
+
+    use super::local::LocalBackend;
+    use super::VaultError;
+    use std::path::{Path, PathBuf};
+
+    /// Name of the unovault subfolder inside iCloud Drive. Chosen
+    /// to match what Finder shows when the user browses
+    /// `iCloud Drive > unovault`.
+    pub const ICLOUD_SUBFOLDER: &str = "unovault";
+
+    /// Resolve the iCloud Drive root for the current user. Returns
+    /// `None` when iCloud Drive is not present (non-macOS host, or
+    /// macOS without iCloud sign-in).
+    ///
+    /// The path is `~/Library/Mobile Documents/com~apple~CloudDocs/`
+    /// when it exists. On non-macOS platforms this function always
+    /// returns `None`.
+    pub fn icloud_drive_root() -> Option<PathBuf> {
+        if !cfg!(target_os = "macos") {
+            return None;
+        }
+        let home = dirs::home_dir()?;
+        let candidate = home
+            .join("Library")
+            .join("Mobile Documents")
+            .join("com~apple~CloudDocs");
+        if candidate.is_dir() {
+            Some(candidate)
+        } else {
+            None
+        }
+    }
+
+    /// Path the unovault subfolder would live at inside iCloud
+    /// Drive. Does not create the folder; a caller that wants to
+    /// persist anything there goes through [`open_icloud_backend`]
+    /// which does.
+    pub fn icloud_unovault_path() -> Option<PathBuf> {
+        icloud_drive_root().map(|root| root.join(ICLOUD_SUBFOLDER))
+    }
+
+    /// Open (and create if necessary) a [`LocalBackend`] rooted at
+    /// the iCloud Drive unovault folder. Returns `Ok(None)` when
+    /// iCloud Drive is not available — the caller's UI should
+    /// show a "iCloud unavailable" hint in that case.
+    ///
+    /// The returned backend is a regular [`LocalBackend`]; to the
+    /// vault it looks identical to any other directory. What
+    /// makes it "iCloud" is only that macOS will sync the files
+    /// inside to every other device of the same Apple ID.
+    pub fn open_icloud_backend() -> Result<Option<LocalBackend>, VaultError> {
+        let Some(path) = icloud_unovault_path() else {
+            return Ok(None);
+        };
+        let backend = LocalBackend::new(&path)?;
+        Ok(Some(backend))
+    }
+
+    /// Override constructor for tests: build a LocalBackend at the
+    /// given path as if it were the iCloud folder. Lets the
+    /// integration tests in `vault` exercise the full sync path
+    /// without requiring a real iCloud Drive folder.
+    pub fn open_at(path: &Path) -> Result<LocalBackend, VaultError> {
+        LocalBackend::new(path)
+    }
+
+    /// Exposed so the Tauri layer can render
+    /// "Syncing to /Users/you/Library/..." without re-resolving the
+    /// path itself. Does NOT touch the filesystem.
+    pub fn display_path_for_status() -> Option<String> {
+        icloud_unovault_path().map(|p| p.display().to_string())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::sync::FileSystemBackend;
+        use tempfile::tempdir;
+
+        #[test]
+        fn open_at_creates_directory_and_accepts_chunks() {
+            let dir = tempdir().expect("tempdir");
+            let root = dir.path().join("icloud-emulated").join("unovault");
+            let backend = open_at(&root).expect("open");
+            backend
+                .write("00000001-aaaa.chunk", b"payload")
+                .expect("write");
+            let list = backend.list().expect("list");
+            assert_eq!(list.len(), 1);
+        }
+
+        #[test]
+        fn icloud_drive_root_returns_none_on_non_macos() {
+            // On macOS CI the folder may or may not exist, so this
+            // test only enforces the contract on non-macOS.
+            if !cfg!(target_os = "macos") {
+                assert!(icloud_drive_root().is_none());
+            }
+        }
+
+        #[test]
+        fn display_path_for_status_is_well_formed_if_present() {
+            // Only asserts the shape when the folder exists. On a
+            // CI worker without iCloud this test is a no-op.
+            if let Some(path) = display_path_for_status() {
+                assert!(path.contains("unovault"));
+            }
+        }
+    }
+}
+
+// =============================================================================
 // CHAOS BACKEND — the test harness that proves LWW convergence under
 // adversarial delivery order.
 // =============================================================================

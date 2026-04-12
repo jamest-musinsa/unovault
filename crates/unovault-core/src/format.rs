@@ -482,6 +482,66 @@ pub fn write_chunk(
     Ok(final_path)
 }
 
+/// Write raw chunk bytes (already encrypted + framed) to the bundle's
+/// chunks directory with the given filename. Used by the sync layer
+/// to ingest chunks produced by another install without re-encrypting
+/// them. Crash-safe: writes to `<name>.tmp` first, fsyncs, then
+/// renames into place.
+///
+/// Unlike [`write_chunk`], this does not care about the file's
+/// structure — the caller is responsible for calling
+/// [`decode_chunk_bytes`] to verify the bytes decrypt with the
+/// current keys before trusting them.
+pub fn write_chunk_raw(
+    paths: &VaultPaths,
+    filename: &str,
+    bytes: &[u8],
+) -> Result<PathBuf, VaultError> {
+    let final_path = paths.chunks_dir.join(filename);
+    let tmp_path = paths.chunks_dir.join(format!("{filename}.tmp"));
+
+    {
+        let mut f = fs::File::create(&tmp_path).map_err(|_| PlatformPolicyError::SandboxDenied)?;
+        f.write_all(bytes)
+            .map_err(|_| PlatformPolicyError::SandboxDenied)?;
+        f.sync_all()
+            .map_err(|_| PlatformPolicyError::SandboxDenied)?;
+    }
+    fs::rename(&tmp_path, &final_path).map_err(|_| PlatformPolicyError::SandboxDenied)?;
+
+    Ok(final_path)
+}
+
+/// List every chunk filename (no path) currently on disk. Used by the
+/// sync layer to compare against a backend's contents without loading
+/// every byte into memory. Wraps [`list_chunk_files`] and strips the
+/// directory prefix.
+pub fn list_chunk_filenames(paths: &VaultPaths) -> Result<Vec<String>, VaultError> {
+    let files = list_chunk_files(paths)?;
+    Ok(files
+        .into_iter()
+        .filter_map(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|s| s.to_string())
+        })
+        .collect())
+}
+
+/// Read raw bytes for a specific chunk file by filename. Used by the
+/// sync layer to push a chunk to a backend without round-tripping
+/// through decrypt + re-encrypt.
+pub fn read_chunk_raw(paths: &VaultPaths, filename: &str) -> Result<Vec<u8>, VaultError> {
+    let path = paths.chunks_dir.join(filename);
+    match fs::read(&path) {
+        Ok(bytes) => Ok(bytes),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Err(UserActionableError::CorruptedChunk.into())
+        }
+        Err(_) => Err(PlatformPolicyError::SandboxDenied.into()),
+    }
+}
+
 /// Scan the chunks directory and return every valid chunk file path,
 /// filtered by extension. Ignores hidden files, temp files, and files that
 /// do not end in `.chunk`.

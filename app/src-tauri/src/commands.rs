@@ -329,6 +329,84 @@ pub fn copy_password_to_clipboard(
 }
 
 // =============================================================================
+// ICLOUD SYNC (week 22-23)
+// =============================================================================
+
+/// Status of the iCloud sync backend. Reported to the UI so the
+/// sync button can be hidden when iCloud is unavailable.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ICloudStatus {
+    /// Whether the iCloud Drive folder exists and is writable.
+    pub available: bool,
+    /// Human-readable path the backend would sync to, `None` when
+    /// iCloud is not available. Shown in the "Synced to ..." toast.
+    pub path: Option<IpcString>,
+}
+
+impl IpcSafe for ICloudStatus {}
+
+/// Result of a successful `sync_vault` call.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncOutcome {
+    pub pushed_count: u32,
+    pub pulled_count: u32,
+    pub path: IpcString,
+}
+
+impl IpcSafe for SyncOutcome {}
+
+/// Report whether the iCloud Drive folder is available. Used by the
+/// UI to decide whether to render the sync button.
+#[safe_command]
+#[tauri::command]
+pub fn icloud_status() -> CommandResult<ICloudStatus> {
+    let path = unovault_core::sync::icloud::icloud_unovault_path();
+    let available = path
+        .as_ref()
+        .map(|p| p.parent().map(|parent| parent.is_dir()).unwrap_or(false))
+        .unwrap_or(false);
+    Ok(ICloudStatus {
+        available,
+        path: path.map(|p| IpcString::new(p.display().to_string())),
+    })
+}
+
+/// Push local chunks to iCloud Drive and pull any chunks iCloud has
+/// that we don't. Requires an unlocked vault and an available
+/// iCloud Drive folder.
+#[safe_command]
+#[tauri::command]
+pub fn sync_vault(state: State<'_, AppState>) -> CommandResult<SyncOutcome> {
+    let backend = unovault_core::sync::icloud::open_icloud_backend()?.ok_or_else(|| {
+        CommandError::UserActionable(IpcString::new(
+            "iCloud Drive is not available — sign in to iCloud in System Settings",
+        ))
+    })?;
+    let display_path = unovault_core::sync::icloud::display_path_for_status()
+        .unwrap_or_else(|| "iCloud Drive".to_string());
+
+    let mut guard = state
+        .vault
+        .write()
+        .map_err(|_| CommandError::BugInUnovault(IpcString::new("vault lock poisoned")))?;
+    let vault = guard
+        .as_mut()
+        .ok_or_else(|| CommandError::UserActionable(IpcString::new("vault is locked")))?;
+
+    // Flush any pending edits before sync so a concurrent
+    // device sees the user's latest work.
+    vault.save()?;
+
+    let summary = vault.sync_with_backend(&backend)?;
+
+    Ok(SyncOutcome {
+        pushed_count: summary.pushed,
+        pulled_count: summary.pulled,
+        path: IpcString::new(display_path),
+    })
+}
+
+// =============================================================================
 // RECOVERY + PASSWORD ROTATION (week 21)
 // =============================================================================
 
